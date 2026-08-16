@@ -50,11 +50,13 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=true
 export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-spawn}
 export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
+export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
 
 mkdir -p "${OUTPUT_DIR}"
 cd "${REPO_ROOT}"
 
-echo "vLLM multiprocessing=${VLLM_WORKER_MULTIPROC_METHOD} logging=${VLLM_LOGGING_LEVEL}"
+echo "vLLM multiprocessing=${VLLM_WORKER_MULTIPROC_METHOD} logging=${VLLM_LOGGING_LEVEL} "\
+    "flashinfer_sampler=${VLLM_USE_FLASHINFER_SAMPLER}"
 "${PYTHON_BIN}" -c 'import pandas, pyarrow, torch, transformers, vllm; print("offline dependencies: ok")'
 
 if [[ "${RUN_POOL}" == "1" ]]; then

@@ -87,7 +87,8 @@ All Hugging Face offline environment variables are enabled by the launcher. It n
 The launcher also defaults `VLLM_WORKER_MULTIPROC_METHOD=spawn` so CUDA workers
 are safe after parent-process CUDA detection. vLLM logs are captured by the
 Slurm `.out` file at `INFO` level; set `VLLM_LOGGING_LEVEL=DEBUG` for verbose
-diagnostics.
+diagnostics. `VLLM_USE_FLASHINFER_SAMPLER=0` selects the native sampler and
+avoids FlashInfer JIT compilation on HPC nodes with an older system compiler.
 
 ## Separate stages
 

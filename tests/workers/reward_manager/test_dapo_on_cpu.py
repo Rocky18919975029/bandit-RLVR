@@ -96,6 +96,23 @@ def test_call_without_overlong_buffer_cfg():
     assert torch.all(reward_tensor[:, -1] == 0.5)
 
 
+def test_call_forwards_strict_box_verify_by_default():
+    received_kwargs = []
+
+    def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+        received_kwargs.append(kwargs)
+        return 0.5
+
+    reward_manager = DAPORewardManager(
+        tokenizer=_DummyTokenizer(),
+        num_examine=0,
+        compute_score=compute_score,
+    )
+    reward_manager(_make_data(batch_size=1))
+
+    assert received_kwargs == [{"strict_box_verify": True}]
+
+
 def test_call_with_overlong_buffer_enabled_applies_penalty():
     reward_manager = DAPORewardManager(
         tokenizer=_DummyTokenizer(),
@@ -125,3 +142,42 @@ def test_reward_loop_construct_with_overlong_buffer_disabled():
         config=config, tokenizer=_DummyTokenizer(), compute_score=_constant_compute_score
     )
     assert reward_manager.max_resp_len is None
+    assert reward_manager.strict_box_verify is True
+
+
+@pytest.mark.asyncio
+async def test_reward_loop_forwards_explicit_string_boolean():
+    received_kwargs = []
+
+    def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+        received_kwargs.append(kwargs)
+        return 0.5
+
+    config = OmegaConf.create({"reward": {"reward_kwargs": {"strict_box_verify": "false"}}})
+    reward_manager = RewardLoopDAPORewardManager(
+        config=config,
+        tokenizer=_DummyTokenizer(),
+        compute_score=compute_score,
+    )
+    await reward_manager.run_single(_make_data(batch_size=1))
+
+    assert received_kwargs == [{"strict_box_verify": False}]
+
+
+@pytest.mark.asyncio
+async def test_reward_loop_forwards_strict_box_verify_to_async_scorer_by_default():
+    received_kwargs = []
+
+    async def compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs):
+        received_kwargs.append(kwargs)
+        return 0.5
+
+    config = OmegaConf.create({"reward": {}})
+    reward_manager = RewardLoopDAPORewardManager(
+        config=config,
+        tokenizer=_DummyTokenizer(),
+        compute_score=compute_score,
+    )
+    await reward_manager.run_single(_make_data(batch_size=1))
+
+    assert received_kwargs == [{"strict_box_verify": True}]

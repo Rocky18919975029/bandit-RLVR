@@ -22,6 +22,11 @@ reward_manager:
     path: null
     name: custom_reward_manager
 
+# Keyword arguments consumed by specialized reward managers.
+reward_kwargs:
+  # Require math DAPO answers to use the final `\boxed{}` form by default.
+  strict_box_verify: true
+
 # Inference config for reward models,
 # support both discriminative and generative models
 reward_model:

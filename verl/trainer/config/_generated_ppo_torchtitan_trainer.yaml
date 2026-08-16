@@ -709,6 +709,8 @@ reward:
       _target_: verl.trainer.config.config.ModuleConfig
       path: null
       name: custom_reward_manager
+  reward_kwargs:
+    strict_box_verify: true
   reward_model:
     _target_: verl.workers.config.RewardModelConfig
     enable: false

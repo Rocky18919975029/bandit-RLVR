@@ -218,7 +218,7 @@ def is_correct_strict_box(
 
 
 def verify(
-    solution_str: str, answer: str, strict_box_verify: bool = False, pause_tokens_index: Optional[list[int]] = None
+    solution_str: str, answer: str, strict_box_verify: bool = True, pause_tokens_index: Optional[list[int]] = None
 ) -> bool:
     """Verify if the solution is correct.
 
@@ -249,7 +249,7 @@ def verify(
 def compute_score(
     solution_str: str,
     ground_truth: str,
-    strict_box_verify: bool = False,
+    strict_box_verify: bool = True,
     pause_tokens_index: Optional[list[int]] = None,
 ) -> float:
     """Compute the reward score for a solution.

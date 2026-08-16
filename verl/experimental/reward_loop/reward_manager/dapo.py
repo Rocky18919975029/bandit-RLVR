@@ -20,6 +20,12 @@ from verl.experimental.reward_loop.reward_manager.base import RewardManagerBase
 from verl.utils.reward_score import default_compute_score
 
 
+def _as_bool(value):
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 @register("dapo")
 class DAPORewardManager(RewardManagerBase):
     """DAPO Reward Manager."""
@@ -30,11 +36,15 @@ class DAPORewardManager(RewardManagerBase):
         self.is_async_reward_score = inspect.iscoroutinefunction(self.compute_score)
 
         # DAPO Reward Config
-        overlong_buffer_cfg = config.reward.get("reward_kwargs", {}).get("overlong_buffer_cfg", None)
+        reward_kwargs = config.reward.get("reward_kwargs", {})
+        overlong_buffer_cfg = reward_kwargs.get("overlong_buffer_cfg", None)
         self.overlong_buffer_cfg = overlong_buffer_cfg
-        self.max_resp_len = config.reward.get("reward_kwargs", {}).get("max_resp_len", None)
+        self.max_resp_len = reward_kwargs.get("max_resp_len", None)
+        self.strict_box_verify = _as_bool(reward_kwargs.get("strict_box_verify", True))
         self.reward_router_address = reward_router_address
         self.reward_model_tokenizer = reward_model_tokenizer
+
+        print(f"[DAPORewardManager] strict_box_verify={self.strict_box_verify}", flush=True)
 
         if self.overlong_buffer_cfg is not None and self.overlong_buffer_cfg.enable:
             assert self.max_resp_len is not None, (
@@ -78,6 +88,7 @@ class DAPORewardManager(RewardManagerBase):
                 solution_str=response_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
+                strict_box_verify=self.strict_box_verify,
                 **extra_reward_kwargs,
             )
         else:
@@ -88,6 +99,7 @@ class DAPORewardManager(RewardManagerBase):
                     solution_str=response_str,
                     ground_truth=ground_truth,
                     extra_info=extra_info,
+                    strict_box_verify=self.strict_box_verify,
                     **extra_reward_kwargs,
                 ),
             )

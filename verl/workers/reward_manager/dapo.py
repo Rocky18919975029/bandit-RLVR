@@ -22,6 +22,12 @@ from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 
+def _as_bool(value):
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 @register("dapo")
 class DAPORewardManager(AbstractRewardManager):
     """The reward manager."""
@@ -34,6 +40,7 @@ class DAPORewardManager(AbstractRewardManager):
         reward_fn_key="data_source",
         max_resp_len=None,
         overlong_buffer_cfg=None,
+        strict_box_verify=True,
     ) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
@@ -41,6 +48,9 @@ class DAPORewardManager(AbstractRewardManager):
         self.reward_fn_key = reward_fn_key
         self.overlong_buffer_cfg = overlong_buffer_cfg
         self.max_resp_len = max_resp_len
+        self.strict_box_verify = _as_bool(strict_box_verify)
+
+        print(f"[DAPORewardManager] strict_box_verify={self.strict_box_verify}", flush=True)
 
         if self.overlong_buffer_cfg is not None and self.overlong_buffer_cfg.enable:
             assert self.max_resp_len is not None, (
@@ -104,6 +114,7 @@ class DAPORewardManager(AbstractRewardManager):
                 solution_str=response_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
+                strict_box_verify=self.strict_box_verify,
             )
 
             score: float

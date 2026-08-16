@@ -84,6 +84,10 @@ bash scripts/joint_tempering/launch_experiment.sh
 ```
 
 All Hugging Face offline environment variables are enabled by the launcher. It never downloads a model or dataset.
+The launcher also defaults `VLLM_WORKER_MULTIPROC_METHOD=spawn` so CUDA workers
+are safe after parent-process CUDA detection. vLLM logs are captured by the
+Slurm `.out` file at `INFO` level; set `VLLM_LOGGING_LEVEL=DEBUG` for verbose
+diagnostics.
 
 ## Separate stages
 

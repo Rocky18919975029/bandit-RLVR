@@ -35,6 +35,7 @@ from examples.joint_tempering.common import (  # noqa: E402
     load_sampled_problems,
     make_tokens_prompt,
     read_jsonl,
+    response_token_budget,
     tokenize_problem_prompt,
     write_json,
 )
@@ -70,6 +71,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--prompt-batch-size must be positive")
     if args.tensor_parallel_size <= 0:
         raise ValueError("--tensor-parallel-size must be positive")
+    if args.max_model_len is not None and args.max_model_len <= 0:
+        raise ValueError("--max-model-len must be positive")
     if not 0 < args.gpu_memory_utilization <= 1:
         raise ValueError("--gpu-memory-utilization must be in (0, 1]")
 
@@ -84,6 +87,7 @@ def expected_manifest(args: argparse.Namespace, selected_indices: list[int]) -> 
         "selected_source_row_indices": selected_indices,
         "num_candidates": args.num_candidates,
         "max_response_tokens": args.max_response_tokens,
+        "max_model_len": args.max_model_len,
         "generation_seed": args.generation_seed,
         "sampling": {
             "temperature": 1.0,
@@ -151,6 +155,9 @@ def main() -> None:
     )
     for problem in pending_problems:
         problem["prompt_token_ids"] = tokenize_problem_prompt(tokenizer, problem["prompt"])
+        problem["response_token_budget"] = response_token_budget(
+            len(problem["prompt_token_ids"]), args.max_response_tokens, args.max_model_len
+        )
 
     llm = build_llm(
         model_path=args.model,
@@ -173,7 +180,7 @@ def main() -> None:
                 top_p=1.0,
                 top_k=-1,
                 repetition_penalty=1.0,
-                max_tokens=args.max_response_tokens,
+                max_tokens=problem["response_token_budget"],
                 ignore_eos=False,
                 logprobs=0,
                 seed=stable_seed(args.generation_seed, problem["prompt_id"], "pool"),
@@ -219,6 +226,7 @@ def main() -> None:
                     "source_row_index": problem["source_row_index"],
                     "prompt": problem["prompt"],
                     "prompt_token_ids": problem["prompt_token_ids"],
+                    "response_token_budget": problem["response_token_budget"],
                     "ground_truth": problem["ground_truth"],
                     "data_source": problem["data_source"],
                     "extra_info": problem["extra_info"],

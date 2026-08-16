@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 
 DEFAULT_DATA_PATH = "/data/user/zhongal/data/reschedule/DAPO-Math-17k.filtered.seed42.sample1536.parquet"
-POOL_SCHEMA_VERSION = 1
+POOL_SCHEMA_VERSION = 2
 
 
 def to_builtin(value: Any) -> Any:
@@ -142,6 +142,24 @@ def tokenize_problem_prompt(tokenizer: Any, prompt: Any) -> list[int]:
         raise TypeError(f"prompt must be a chat-message list or string, got {type(prompt).__name__}")
     tokenized = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, tokenize=True)
     return normalize_token_ids(tokenized)
+
+
+def response_token_budget(prompt_token_count: int, requested_tokens: int, max_model_len: int | None) -> int:
+    """Bound a completion by both its requested size and the model context."""
+    if prompt_token_count < 0:
+        raise ValueError("prompt_token_count must be non-negative")
+    if requested_tokens <= 0:
+        raise ValueError("requested_tokens must be positive")
+    if max_model_len is None:
+        return requested_tokens
+    if max_model_len <= 0:
+        raise ValueError("max_model_len must be positive")
+    available_tokens = max_model_len - prompt_token_count
+    if available_tokens <= 0:
+        raise ValueError(
+            f"prompt has {prompt_token_count} tokens, leaving no response capacity in max_model_len={max_model_len}"
+        )
+    return min(requested_tokens, available_tokens)
 
 
 def make_tokens_prompt(prompt_token_ids: list[int]) -> Any:

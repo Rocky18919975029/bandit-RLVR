@@ -15,7 +15,7 @@
 import numpy as np
 import pytest
 
-from examples.joint_tempering.common import deterministic_problem_indices
+from examples.joint_tempering.common import deterministic_problem_indices, response_token_budget
 from examples.joint_tempering.sweep_joint import evaluate_configuration
 from verl.experimental.joint_tempering.sir import (
     effective_sample_size,
@@ -60,6 +60,17 @@ def test_problem_sampling_selects_exactly_128_unique_sorted_rows():
     assert len(set(indices)) == 128
     assert indices == sorted(indices)
     assert indices == deterministic_problem_indices(dataset_size=1536, num_problems=128, seed=42)
+
+
+def test_response_budget_respects_model_context_and_requested_cap():
+    assert response_token_budget(prompt_token_count=512, requested_tokens=4096, max_model_len=4096) == 3584
+    assert response_token_budget(prompt_token_count=512, requested_tokens=2048, max_model_len=4096) == 2048
+    assert response_token_budget(prompt_token_count=512, requested_tokens=4096, max_model_len=None) == 4096
+
+
+def test_response_budget_rejects_prompt_that_fills_context():
+    with pytest.raises(ValueError, match="leaving no response capacity"):
+        response_token_budget(prompt_token_count=4096, requested_tokens=4096, max_model_len=4096)
 
 
 def _pool_row(candidate_lengths=(4, 4, 4)):

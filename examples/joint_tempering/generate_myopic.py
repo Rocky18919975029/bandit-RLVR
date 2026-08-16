@@ -35,6 +35,7 @@ from examples.joint_tempering.common import (  # noqa: E402
     extract_vllm_completion,
     make_tokens_prompt,
     read_jsonl,
+    response_token_budget,
     write_json,
 )
 from verl.experimental.joint_tempering.sir import stable_seed  # noqa: E402
@@ -73,6 +74,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--request-batch-size must be positive")
     if args.tensor_parallel_size <= 0:
         raise ValueError("--tensor-parallel-size must be positive")
+    if args.max_model_len is not None and args.max_model_len <= 0:
+        raise ValueError("--max-model-len must be positive")
     if not 0 < args.gpu_memory_utilization <= 1:
         raise ValueError("--gpu-memory-utilization must be in (0, 1]")
 
@@ -83,6 +86,7 @@ def expected_manifest(args: argparse.Namespace, prompt_ids: list[str]) -> dict:
         "pool": args.pool,
         "prompt_ids": prompt_ids,
         "max_response_tokens": args.max_response_tokens,
+        "max_model_len": args.max_model_len,
         "generation_seed": args.generation_seed,
         "prefix_sampling": {
             "temperature": "1 / alpha",
@@ -194,6 +198,17 @@ def main() -> None:
 
     for batch_start in range(0, len(pending_requests), args.request_batch_size):
         batch = pending_requests[batch_start : batch_start + args.request_batch_size]
+        for request in batch:
+            request["response_token_budget"] = response_token_budget(
+                len(request["pool_row"]["prompt_token_ids"]),
+                args.max_response_tokens,
+                args.max_model_len,
+            )
+            if request["block_length"] >= request["response_token_budget"]:
+                raise ValueError(
+                    f"prompt {request['pool_row']['prompt_id']} has total response budget "
+                    f"{request['response_token_budget']}, which must exceed block length {request['block_length']}"
+                )
         prefix_prompts = [make_tokens_prompt(request["pool_row"]["prompt_token_ids"]) for request in batch]
         prefix_params = [
             SamplingParams(
@@ -241,7 +256,7 @@ def main() -> None:
                     top_p=1.0,
                     top_k=-1,
                     repetition_penalty=1.0,
-                    max_tokens=args.max_response_tokens - request["block_length"],
+                    max_tokens=request["response_token_budget"] - request["block_length"],
                     ignore_eos=False,
                     logprobs=0,
                     seed=stable_seed(
@@ -280,6 +295,7 @@ def main() -> None:
                     "block_length": request["block_length"],
                     "alpha": request["alpha"],
                     "repeat": request["repeat"],
+                    "response_token_budget": request["response_token_budget"],
                     "block_token_ids": block["token_ids"],
                     "block_token_log_probs": block["token_log_probs"],
                     "block_finish_reason": block["finish_reason"],

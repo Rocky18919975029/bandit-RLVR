@@ -66,6 +66,11 @@ max_response_tokens=4096
 myopic_repeats=1
 ```
 
+When `--max-model-len` is set, each request is automatically capped at
+`min(max_response_tokens, max_model_len - prompt_tokens)`. This keeps full
+trajectories within the model context while giving every prompt all available
+space to reach EOS.
+
 Override them with environment variables, for example:
 
 ```bash

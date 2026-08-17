@@ -15,6 +15,7 @@
 set -xeuo pipefail
 
 VERL_WORKDIR=${VERL_WORKDIR:-${SLURM_SUBMIT_DIR}}
+export VERL_WORKDIR
 
 LD_LIBRARY_PATH=":${LD_LIBRARY_PATH:-}:"
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH//:\/data\/apps\/glibc\/2.32\/lib:/:}
@@ -43,19 +44,37 @@ hash -r
 cd "${VERL_WORKDIR}"
 
 python - <<'PY'
+import os
 import sys
+from pathlib import Path
+
 import torch
 import vllm
+import verl
+from packaging import version
 
 print("python:", sys.version)
 print("torch:", torch.__version__)
 print("vllm:", vllm.__version__)
+print("verl:", verl.__file__)
 print("torch cuda:", torch.version.cuda)
 print("cuda available:", torch.cuda.is_available())
 print("device count:", torch.cuda.device_count())
 if not torch.cuda.is_available():
     raise SystemExit("No CUDA device visible inside the Slurm allocation.")
 print("gpu:", torch.cuda.get_device_name(0))
+
+workdir = Path(os.environ["VERL_WORKDIR"]).resolve()
+expected_verl = workdir / "verl" / "__init__.py"
+actual_verl = Path(verl.__file__).resolve()
+if actual_verl != expected_verl:
+    raise SystemExit(f"Wrong VERL imported: expected {expected_verl}, got {actual_verl}")
+if version.parse(vllm.__version__) < version.parse("0.18.0"):
+    raise SystemExit(
+        f"{workdir} requires vLLM >= 0.18.0; found {vllm.__version__}. "
+        "Install the offline vLLM bundle before submitting GRPO."
+    )
+print("bandit-RLVR runtime compatibility: OK")
 PY
 
 MODEL_PATH=${MODEL_PATH:-/data/user/zhongal/.cache/qwen2.5-math-7b-local}

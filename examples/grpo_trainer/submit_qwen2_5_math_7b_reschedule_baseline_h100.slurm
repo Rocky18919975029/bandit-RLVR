@@ -161,6 +161,8 @@ fi
 
 SMOKE_TEST=${SMOKE_TEST:-0}
 if [ "${SMOKE_TEST}" = "1" ]; then
+    MODE=train
+    EXPERIMENT_NAME=qwen2_5_math_7b_grpo_smoke_${SLURM_JOB_ID}
     TRAIN_BATCH_SIZE=8
     ROLLOUT_N=2
     PPO_MINI_BATCH_SIZE=8
@@ -172,6 +174,7 @@ if [ "${SMOKE_TEST}" = "1" ]; then
     TOTAL_TRAINING_STEPS=1
     TEST_FREQ=-1
     SAVE_FREQ=-1
+    RESUME_MODE=disable
     TRAINER_LOGGER='["console"]'
     WANDB_MODE=disabled
 fi

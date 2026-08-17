@@ -100,6 +100,46 @@ bash examples/grpo_trainer/run_qwen3_8b_fsdp.sh
 LoRA variants live in `examples/tuning/lora/`, profiling variants in `examples/profile/`.
 Scale / hardware-specific demos (e.g. `run_qwen3_8b_fsdp_gb200.sh`, FP8 variants, VeOmni) keep a trailing suffix to stay discoverable.
 
+## Qwen2.5-Math-7B Re-Schedule baseline
+
+`run_qwen2_5_math_7b_fsdp.sh` is the pure GRPO control for
+the joint-tempering experiments. It intentionally enables no dynamic
+Re-Schedule, HPF, mixed-policy, or transition-aware weighting. Its comparison
+defaults are 512 prompts per step, 32 rollouts per prompt, one PPO epoch,
+token-mean loss aggregation, temperature/top-p 1.0, strict boxed verification,
+and reuse of vLLM behavior log-probabilities through rollout-correction bypass
+mode.
+
+The accompanying H100 launcher is configured for the offline HKUST-GZ cluster:
+
+```bash
+cd ~/bandit-RLVR
+conda activate verl
+
+JOB_ID=$(
+  sbatch --parsable \
+    --export=ALL,MODEL_PATH=/data/user/zhongal/.cache/qwen2.5-math-7b-local,DATA_DIR=/data/user/zhongal/data/reschedule \
+    examples/grpo_trainer/submit_qwen2_5_math_7b_reschedule_baseline_h100.slurm |
+  cut -d';' -f1
+)
+echo "${JOB_ID}"
+tail -F "slurm-verl-resched-grpo-${JOB_ID}.out"
+```
+
+Run a one-step smoke test before the full baseline:
+
+```bash
+TRAIN_BATCH_SIZE=32 ROLLOUT_N=4 TOTAL_TRAINING_STEPS=1 TEST_FREQ=-1 \
+  sbatch --export=ALL \
+  examples/grpo_trainer/submit_qwen2_5_math_7b_reschedule_baseline_h100.slurm
+```
+
+Check the log for `[DAPORewardManager] strict_box_verify=True`. The default
+checkpoint contents are `model`, `optimizer`, `extra`, and `hf_model`, with a
+checkpoint written every step. A fresh run uses `RESUME_MODE=disable`; to
+resume, submit with `RESUME_MODE=auto` and exactly the same `PROJECT_NAME`,
+`EXPERIMENT_NAME`, dataset, and training hyperparameters.
+
 ## Reference
 
 - See [verl baselines](https://verl.readthedocs.io/en/latest/algo/baseline.html) for reference metrics.

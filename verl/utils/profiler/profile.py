@@ -15,7 +15,6 @@
 import functools
 from typing import Callable, Optional
 
-from ..tracking import RLInsightLogger
 from .config import ProfilerConfig
 
 
@@ -81,12 +80,7 @@ class DistProfiler:
     """
 
     def __init__(
-        self,
-        rank: int,
-        config: Optional[ProfilerConfig] = None,
-        tool_config: Optional[object] = None,
-        save_file_prefix: Optional[str] = None,
-        **kwargs,
+        self, rank: int, config: Optional[ProfilerConfig] = None, tool_config: Optional[object] = None, **kwargs
     ):
         # Default config
         if config is None:
@@ -95,12 +89,8 @@ class DistProfiler:
         if tool_config is None:
             tool_config = config.tool_config
 
-        self.rank = rank
         self.config = config
         self.tool_config = tool_config
-        # Optional label (typically the worker role, e.g. "actor"/"critic"/"ref") embedded
-        # in per-process trace filenames so results from different roles are distinguishable.
-        self.save_file_prefix = save_file_prefix
 
         self._impl = None
         self._tool = getattr(config, "tool", None)
@@ -137,7 +127,7 @@ class DistProfiler:
         elif self._tool == "torch":
             from .torch_profile import Profiler as _Torch
 
-            self._impl = _Torch(rank=rank, config=config, tool_config=tool_config, save_file_prefix=save_file_prefix)
+            self._impl = _Torch(rank=rank, config=config, tool_config=tool_config)
         elif self._tool == "torch_memory":
             from .torch_memory_profile import TorchMemoryProfiler
 
@@ -182,21 +172,6 @@ class DistProfiler:
             self._this_step = False
             return getattr(self._impl, "stop", lambda: None)()
 
-    def step(self):
-        """Advance the profiler schedule by one step, intended to be called per mini-batch.
-
-        Delegates to the backend `step` when the tool supports scheduling (currently the
-        torch profiler with a configured `wait/warmup/active/repeat` schedule); for all
-        other backends this is a no-op.
-
-        Gated on enable/rank only (not `this_step`): the training loop may run inside a
-        nested worker whose profiler was never explicitly started, while the underlying
-        torch profiler is process-global. The backend keeps `step` safe (no-op) whenever
-        no profiler is actively running.
-        """
-        if self.check_enable() and self.check_this_rank():
-            return getattr(self._impl, "step", lambda: None)()
-
     @classmethod
     def annotate(
         cls,
@@ -216,30 +191,25 @@ class DistProfiler:
             @functools.wraps(func)
             def wrapper(self_instance, *args, **kwargs_inner):
                 profiler = getattr(self_instance, "profiler", None)
-                if profiler is None:
-                    return func(self_instance, *args, **kwargs_inner)
-
-                with RLInsightLogger.trace_state(
-                    kwargs_outer.get("role", func.__qualname__), state_lane_id=f"rank_{profiler.rank}"
+                if (
+                    not profiler
+                    or not profiler.check_enable()
+                    or not profiler.check_this_step()
+                    or not profiler.check_this_rank()
                 ):
-                    if not profiler.check_enable() or not profiler.check_this_step() or not profiler.check_this_rank():
-                        return func(self_instance, *args, **kwargs_inner)
-
-                    impl = profiler._impl
-                    if hasattr(impl, "annotate"):
-                        try:
-                            actual_decorator = impl.annotate(
-                                message=message, color=color, domain=domain, category=category, **kwargs_outer
-                            )
-                            wrapped = actual_decorator(func)
-                        except Exception:
-                            # Only fall back when *setting up* backend profiling fails.
-                            # Never guard the call to func itself here: doing so would
-                            # swallow real stage errors and re-run func (executing the
-                            # stage twice with duplicated side effects).
-                            wrapped = func
-                        return wrapped(self_instance, *args, **kwargs_inner)
                     return func(self_instance, *args, **kwargs_inner)
+
+                impl = profiler._impl
+                if hasattr(impl, "annotate"):
+                    try:
+                        actual_decorator = impl.annotate(
+                            message=message, color=color, domain=domain, category=category, **kwargs_outer
+                        )
+
+                        return actual_decorator(func)(self_instance, *args, **kwargs_inner)
+                    except Exception:
+                        return func(self_instance, *args, **kwargs_inner)
+                return func(self_instance, *args, **kwargs_inner)
 
             return wrapper
 
@@ -251,9 +221,6 @@ class _NoOpProfiler:
         return
 
     def stop(self):
-        return
-
-    def step(self):
         return
 
 
@@ -283,8 +250,3 @@ class DistProfilerExtension:
     def stop_profile(self) -> None:
         """Stop profiling for the current rank in the current training step."""
         self.profiler.stop()
-
-    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def step_profile(self) -> None:
-        """Advance the profiler schedule by one step (typically once per mini-batch)."""
-        self.profiler.step()

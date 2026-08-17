@@ -24,7 +24,6 @@ from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 from verl.utils.device import auto_set_device, is_cuda_available
 from verl.utils.import_utils import load_class_from_fqn
-from verl.utils.logging_utils import configure_verl_logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
@@ -40,26 +39,13 @@ def run_ppo(config, task_runner_class) -> None:
                 model paths, and training hyperparameters.
         task_runner_class: For recipe to change TaskRunner.
     """
-    # Propagate determinism env vars from config before ray.init() so
-    # get_ppo_ray_runtime_env() forwards them to all Ray actors.
-    rollout_cfg = config.actor_rollout_ref.rollout
-    rm_rollout_cfg = config.reward.reward_model.rollout
-    if rollout_cfg.full_determinism or (config.reward.reward_model.enable and rm_rollout_cfg.full_determinism):
-        os.environ["VERL_FULL_DETERMINISM"] = "1"
-        os.environ["VLLM_BATCH_INVARIANT"] = "1"
-        os.environ["PYTHONHASHSEED"] = str(rollout_cfg.seed)
-
-    trainer_logger = config.trainer.get("logger", [])
-    if "rl_insight" in ([trainer_logger] if isinstance(trainer_logger, str) else trainer_logger or []):
-        os.environ["VERL_RL_INSIGHT_ENABLE"] = "1"
-
     # Check if Ray is not initialized
     if not ray.is_initialized():
         # Initialize Ray with a local cluster configuration
         # Set environment variables in the runtime environment to control tokenizer parallelism,
         # NCCL debug level, VLLM logging level, and allow runtime LoRA updating
         # `num_cpus` specifies the number of CPU cores Ray can use, obtained from the configuration
-        default_runtime_env = get_ppo_ray_runtime_env(config)
+        default_runtime_env = get_ppo_ray_runtime_env()
         ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
 
@@ -133,8 +119,6 @@ class TaskRunnerV1:
 
     def run(self, config: DictConfig):
         """Run the PPO training process."""
-        configure_verl_logging()
-
         import transfer_queue as tq
 
         from verl.trainer.ppo.v1 import get_trainer_cls
@@ -148,20 +132,13 @@ class TaskRunnerV1:
 
         # initialize transfer queue
         tq.init(config.transfer_queue)
-        succeeded = False
         try:
             self.trainer = trainer_cls(config=config)
             self.trainer.init()
             self.init_agent_loop_manager()
             self.trainer.fit(self.agent_loop_manager)
-            succeeded = True
         finally:
-            try:
-                tracking = getattr(self.trainer, "logger", None)
-                if tracking is not None:
-                    tracking.finish(exit_code=0 if succeeded else 1)
-            finally:
-                tq.close()
+            tq.close()
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)

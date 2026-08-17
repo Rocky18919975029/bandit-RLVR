@@ -30,7 +30,7 @@ module load cuda/12.8
 module list
 
 CONDA_SH=${CONDA_SH:-/share/anaconda3/etc/profile.d/conda.sh}
-CONDA_ENV_PATH=${CONDA_ENV_PATH:-/data/user/zhongal/.conda/envs/bandit-verl}
+CONDA_ENV_PATH=${CONDA_ENV_PATH:-/data/user/zhongal/.conda/envs/verl}
 if [ ! -f "${CONDA_SH}" ]; then
     echo "Conda init script not found: ${CONDA_SH}" >&2
     exit 1
@@ -69,10 +69,9 @@ expected_verl = workdir / "verl" / "__init__.py"
 actual_verl = Path(verl.__file__).resolve()
 if actual_verl != expected_verl:
     raise SystemExit(f"Wrong VERL imported: expected {expected_verl}, got {actual_verl}")
-if version.parse(vllm.__version__) < version.parse("0.18.0"):
+if not version.parse("0.8.5") <= version.parse(vllm.__version__) <= version.parse("0.12.0"):
     raise SystemExit(
-        f"{workdir} requires vLLM >= 0.18.0; found {vllm.__version__}. "
-        "Install the offline vLLM bundle before submitting GRPO."
+        f"Stable bandit-RLVR requires vLLM >= 0.8.5, <= 0.12.0; found {vllm.__version__}."
     )
 print("bandit-RLVR runtime compatibility: OK")
 PY

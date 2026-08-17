@@ -35,9 +35,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
         self.response_length = self.rollout_config.response_length
 
     @rollout_trace_op
-    async def run(self, sampling_params: dict[str, Any], priority: int = 0, **kwargs) -> AgentLoopOutput:
-        # priority may arrive as np.int64 from non_tensor_batch; normalize to Python int.
-        priority = int(priority)
+    async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
 
         # 1. extract multimodal inputs from messages
@@ -47,48 +45,46 @@ class SingleTurnAgentLoop(AgentLoopBase):
         audios = multi_modal_data.get("audios")
         mm_processor_kwargs = self._get_mm_processor_kwargs(audios)
 
-        # 2. build the initial prompt with Continuous Token (the only tokenization path).
-        # Multimodal inputs require a VL builder + processor; fail loudly otherwise.
-        self._assert_mm_supported(bool(multi_modal_data))
-        prompt_ids = await self.ct_build_initial_tokens(
+        # 2. apply chat template and tokenize
+        prompt_ids = await self.apply_chat_template(
             messages,
             images=images,
             videos=videos,
             audios=audios,
+            mm_processor_kwargs=mm_processor_kwargs,
         )
+        prefix_ids = kwargs.get("hpf_prefix_ids")
+        if prefix_ids is not None:
+            if hasattr(prefix_ids, "tolist"):
+                prefix_ids = prefix_ids.tolist()
+            prefix_ids = [int(token_id) for token_id in prefix_ids]
+        generation_prompt_ids = prompt_ids + (prefix_ids or [])
 
         # 3. generate sequences
         metrics = {}
         with simple_timer("generate_sequences", metrics):
-            request_id = f"det-{priority}" if getattr(self.rollout_config, "full_determinism", False) else uuid4().hex
             output: TokenOutput = await self.server_manager.generate(
-                request_id=request_id,
-                prompt_ids=prompt_ids,
+                request_id=uuid4().hex,
+                prompt_ids=generation_prompt_ids,
                 sampling_params=sampling_params,
                 image_data=images,
-                audio_data=audios,
                 video_data=videos,
+                audio_data=audios,
                 mm_processor_kwargs=mm_processor_kwargs,
-                priority=priority,
             )
         if metrics.get("num_preempted") is None:
             metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
-
-        merge_result, response_mask, response_logprobs = await self.ct_merge_assistant_token(
-            prompt_ids,
-            output.token_ids,
-            [],
-            [] if output.log_probs else None,
-            assistant_logprobs=output.log_probs if output.log_probs else None,
-        )
-        response_ids = merge_result.token_ids[-len(response_mask) :] if response_mask else []
-        prompt_ids = merge_result.token_ids[: len(merge_result.token_ids) - len(response_mask)]
+        response_ids = (prefix_ids or []) + output.token_ids
+        response_mask = [1] * len(response_ids)
+        response_logprobs = None
+        if output.log_probs:
+            response_logprobs = ([0.0] * len(prefix_ids or [])) + output.log_probs
 
         output: AgentLoopOutput = AgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_ids[: self.response_length],
             response_mask=response_mask[: self.response_length],
-            response_logprobs=response_logprobs[: self.response_length] if response_logprobs else None,
+            response_logprobs=response_logprobs[: self.response_length] if response_logprobs is not None else None,
             routed_experts=(
                 output.routed_experts[: len(prompt_ids) + self.response_length]
                 if output.routed_experts is not None

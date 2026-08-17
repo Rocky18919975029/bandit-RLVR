@@ -14,6 +14,7 @@
 import functools
 import logging
 import os
+import time
 from contextlib import nullcontext
 from copy import deepcopy
 from functools import partial
@@ -120,15 +121,7 @@ class TrainingWorker(Worker, DistProfilerExtension):
             self.profiler_tool_config = None
 
         DistProfilerExtension.__init__(
-            self,
-            DistProfiler(
-                rank=self.rank,
-                config=self.profiler_config,
-                tool_config=self.profiler_tool_config,
-                # Embed the model role (e.g. language_model/value_model) in trace filenames
-                # so standalone (e.g. SFT) traces are self-describing per process.
-                save_file_prefix=getattr(self.config, "model_type", None),
-            ),
+            self, DistProfiler(rank=self.rank, config=self.profiler_config, tool_config=self.profiler_tool_config)
         )
 
         self.model_config.model_type = self.config.model_type
@@ -256,6 +249,8 @@ class TrainingWorker(Worker, DistProfilerExtension):
         epochs = tu.pop(data, key="epochs", default=1)
         seed = tu.pop(data, key="seed", default=42)
         dataloader_kwargs = tu.pop(data, key="dataloader_kwargs", default={})
+        progress_label = tu.pop(data, key="progress_label", default=None)
+        progress_log_interval = int(tu.pop(data, key="progress_log_interval", default=0) or 0)
 
         assert mini_batch_size is not None or num_mini_batch is not None
 
@@ -284,9 +279,27 @@ class TrainingWorker(Worker, DistProfilerExtension):
             # update
             output_lst = []
             total_num_iterations = data.shape[0] // mini_batch_size_per_gpu * epochs
+            progress_enabled = bool(progress_label) and progress_log_interval > 0
+            progress_rank0 = progress_enabled and self.engine.get_data_parallel_rank() == 0
+            progress_start = time.perf_counter()
+            if progress_rank0:
+                print(
+                    "[HPF] actor mini-batch progress start "
+                    f"label={progress_label} total={total_num_iterations} "
+                    f"local_batch={data.shape[0]} mini_batch_per_gpu={mini_batch_size_per_gpu} epochs={epochs}",
+                    flush=True,
+                )
 
             for batch_idx, mini_batch_td in enumerate(dataloader):
-                maybe_fix_3d_position_ids(mini_batch_td)
+                mini_batch_start = time.perf_counter()
+                if progress_rank0:
+                    elapsed = mini_batch_start - progress_start
+                    print(
+                        "[HPF] actor mini-batch start "
+                        f"label={progress_label} mini={batch_idx + 1}/{total_num_iterations} "
+                        f"elapsed_s={elapsed:.2f}",
+                        flush=True,
+                    )
                 # add global token num
                 if "input_ids" in mini_batch_td:
                     global_token_num = mini_batch_td["input_ids"].offsets().diff().tolist()  # (total_nnz,)
@@ -307,11 +320,26 @@ class TrainingWorker(Worker, DistProfilerExtension):
                     update_lr_scheduler=batch_idx == total_num_iterations - 1,
                     disable_auto_offload=True,
                 )
+                if progress_enabled:
+                    tu.assign_non_tensor(
+                        mini_batch_td,
+                        progress_label=progress_label,
+                        progress_log_interval=progress_log_interval,
+                        progress_mini_batch_index=batch_idx + 1,
+                        progress_total_mini_batches=total_num_iterations,
+                    )
                 actor_output = self.train_batch(mini_batch_td)
                 output_lst.append(actor_output)
-                # Advance the profiler schedule once per mini-batch. No-op unless a
-                # torch profiler schedule (wait/warmup/active/repeat) is active.
-                self.profiler.step()
+                if progress_rank0:
+                    elapsed = time.perf_counter() - progress_start
+                    mini_elapsed = time.perf_counter() - mini_batch_start
+                    avg = elapsed / (batch_idx + 1)
+                    print(
+                        "[HPF] actor mini-batch done "
+                        f"label={progress_label} mini={batch_idx + 1}/{total_num_iterations} "
+                        f"mini_elapsed_s={mini_elapsed:.2f} elapsed_s={elapsed:.2f} avg_s_per_mini={avg:.2f}",
+                        flush=True,
+                    )
 
             if self.engine.is_mp_src_rank_with_outputs():
                 actor_output = [tu.get(output, "metrics") for output in output_lst]
@@ -498,26 +526,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             rr_mode = "disabled"
         self.enable_routing_replay = rr_mode != "disabled"
 
-        # Keep the raw (un-dataclassed) role profiler config so the inner actor
-        # TrainingWorker can build a matching DistProfiler in init_model. This lets
-        # train_mini_batch drive the (process-global) torch profiler schedule via
-        # profiler.step(), even though start/stop happen on this outer worker.
-        # NOTE: we must rebuild via the hydra path (omega_conf_to_dataclass without
-        # dataclass_type) so that tool_config entries are real dataclasses with
-        # attribute access; the dataclass_type=ProfilerConfig variant above yields a
-        # plain-dict tool_config that the inner torch profiler cannot consume.
-        self._omega_profiler_config = omega_profiler_config
-
         DistProfilerExtension.__init__(
-            self,
-            DistProfiler(
-                rank=self.rank,
-                config=profiler_config,
-                tool_config=tool_config,
-                # Embed the worker role (actor/rollout/ref/...) in trace filenames so
-                # per-process results are distinguishable across roles and ranks.
-                save_file_prefix=self.role,
-            ),
+            self, DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config)
         )
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
@@ -550,16 +560,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             ref_config.model_config = deepcopy(model_config)
             ref_config.model_config.mtp = MtpConfig(enable=False)
 
-            # Build the inner ref profiler config via the hydra path (same as the actor / SFT),
-            # so its tool_config entries are real dataclass instances the torch profiler can read.
-            # This puts the reference model's inner TrainingWorker on par with the actor's, so the
-            # torch profiler (and the nsys/npu backends) support the reference model too, instead
-            # of the ref silently running with a disabled no-op profiler.
-            ref_omega_profiler_config = self.config.ref.get("profiler", {})
-            ref_profiler_config = (
-                omega_conf_to_dataclass(ref_omega_profiler_config) if ref_omega_profiler_config else None
-            )
-
             # construct TrainingWorkerConfig
             ref_training_config = TrainingWorkerConfig(
                 model_type=ref_config.model_config.get("model_type", "language_model"),
@@ -567,7 +567,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 engine_config=ref_config.engine,
                 optimizer_config=ref_config.optim,
                 checkpoint_config=ref_config.checkpoint,
-                profiler_config=ref_profiler_config,
             )
 
             # assign engine configs
@@ -590,21 +589,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 omega_conf_to_dataclass(self.distillation_config) if self.distillation_enabled else None
             )
 
-            # Build the inner actor profiler config via the hydra path (same as SFT), so
-            # its tool_config entries are real dataclass instances the torch profiler can
-            # read. This gives the inner TrainingWorker a DistProfiler that shares the
-            # process-global torch profiler, so per-mini-batch profiler.step() works.
-            actor_profiler_config = (
-                omega_conf_to_dataclass(self._omega_profiler_config) if self._omega_profiler_config else None
-            )
-
             actor_training_config = TrainingWorkerConfig(
                 model_type=actor_config.model_config.get("model_type", "language_model"),
                 model_config=actor_config.model_config,
                 engine_config=actor_config.engine,
                 optimizer_config=actor_config.optim,
                 checkpoint_config=actor_config.checkpoint,
-                profiler_config=actor_profiler_config,
             )
 
             assert self.config.actor.use_dynamic_bsz == self.config.rollout.log_prob_use_dynamic_bsz
@@ -748,23 +738,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 0. send_weights only for async training with disaggregated trainer and rollout
         if effective_mode != "naive":
-            if effective_mode == "delta_sharded":
-                # the delta engine owns the sync state machine (seed vs steady,
-                # snapshot prime), so it drives the training engine itself.
-                metrics = await self.checkpoint_engine.send_weights(self.actor.engine, global_steps=global_steps)
-                return metrics or {}
             per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
-            metrics = await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
-            return metrics or {}
+            await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
+            return
 
         set_expandable_segments(False)
-        aggressive_empty_cache(force_sync=True)
         log_gpu_memory_usage("Before resume weights", logger=logger)
 
         # 1. resume rollout memory (weights were released during sleep)
-        # sleep_level=1 (adapter mode) never released weights, so do not resume them.
-        # Backends other than sglang carry no sleep_level, hence the default.
-        if self.config.rollout.free_cache_engine and getattr(self.rollout, "sleep_level", 2) != 1:
+        if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["weights"])
         log_gpu_memory_usage("After resume weights", logger=logger)
 
@@ -780,11 +762,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 3. sync weights: For SGLang, we need base first (when needed), then adapter/merged
         if do_lora_base_sync:
-            per_tensor_param_base, _base_peft_config = self.actor.engine.get_per_tensor_param(
+            per_tensor_param_base, peft_config = self.actor.engine.get_per_tensor_param(
                 layered_summon=self.layered_summon, base_sync_done=False
             )
             await self.rollout.update_weights(
-                per_tensor_param_base, peft_config=_base_peft_config, base_sync_done=False, global_steps=global_steps
+                per_tensor_param_base, peft_config=peft_config, base_sync_done=False, global_steps=global_steps
             )
 
         await self.rollout.update_weights(

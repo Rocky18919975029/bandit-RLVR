@@ -107,11 +107,6 @@ class CheckpointEngine(ABC):
     >>> await server_adapter.update_weights(engine.get_weights()) # update weights via cuda ipc
     """
 
-    # How receive_weights yields weights to the server adapter:
-    #   "named_tensors" -- (name, tensor) pairs, bucketed into full-tensor loads.
-    #   "delta_flush"   -- per-flush sparse payloads applied via a custom loader.
-    wire_format = "named_tensors"
-
     @abstractmethod
     def prepare(self) -> dict[str, Any]:
         """Prepare checkpoint engine before each step send_weights/receive_weights.
@@ -303,13 +298,6 @@ class CheckpointEngineWorker(Worker):
 
         self.server_adapter: BaseRollout = server_adapter
         backend = self.rollout_config.checkpoint_engine.backend
-        if backend == "delta_sharded" and self.rollout_config.name != "sglang":
-            raise NotImplementedError(
-                f"checkpoint_engine.backend={backend!r} currently supports only the sglang rollout "
-                f"(got rollout.name={self.rollout_config.name!r}): the sparse apply is dispatched "
-                "through sglang's custom-weight-loader hook. Other backends need a per-backend "
-                "apply interface, planned as a follow-up."
-            )
         bucket_size = self.rollout_config.checkpoint_engine.update_weights_bucket_megabytes << 20
         engine_kwargs = self.rollout_config.checkpoint_engine.engine_kwargs.get(backend, {})
         # If custom_backend_module is set, import it so plugins can register
@@ -334,11 +322,7 @@ class CheckpointEngineWorker(Worker):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None):
         weights = self.checkpoint_engine.receive_weights(global_steps=global_steps)
-        await self.server_adapter.update_weights(
-            weights,
-            global_steps=global_steps,
-            wire_format=getattr(self.checkpoint_engine, "wire_format", "named_tensors"),
-        )
+        await self.server_adapter.update_weights(weights, global_steps=global_steps)
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):
@@ -493,7 +477,7 @@ class CheckpointEngineManager:
         # 0. update weights for sync training with colocated actor and rollout
         if self.backend == "naive":
             ray.get(self.actor_wg.update_weights(global_steps=global_steps, mode=self.backend))
-            return {}
+            return
 
         # 1. abort and save all unfinished requests for partial rollout
         await self.abort_replicas()
@@ -512,16 +496,10 @@ class CheckpointEngineManager:
         self.build_process_group(rollout)
 
         # 5. update weights of all workers
-        results = ray.get(
+        ray.get(
             actor_wg.update_weights(global_steps=global_steps, mode=self.backend)
             + rollout.update_weights(global_steps=global_steps)
         )
-        # The sender workers return the engine's per-sync metrics (empty for
-        # backends that don't track any); merge and hand them to the trainer.
-        sync_metrics: dict = {}
-        for result in results[: actor_wg.world_size]:
-            if isinstance(result, dict):
-                sync_metrics.update(result)
 
         # 6. finalize all workers
         ray.get(
@@ -535,12 +513,10 @@ class CheckpointEngineManager:
         # 8. resume all unfinished requests for partial rollout
         await self.resume_generation_replicas()
 
-        return sync_metrics
-
 
 async def split_weight_chunks(
-    weights: Generator[tuple[str, torch.Tensor], None, None], bucket_size: int, meta_only: bool = False
-) -> AsyncGenerator[tuple[TensorMeta, torch.Tensor | None], None]:
+    weights: Generator[tuple[str, torch.Tensor], None, None], bucket_size: int
+) -> AsyncGenerator[tuple[TensorMeta, torch.Tensor], None]:
     """Split the weight into chunks.
 
     Args:
@@ -563,7 +539,7 @@ async def split_weight_chunks(
                 chunk_size=chunk_size,
                 offset=None,
             )
-            yield (tensor_meta, None if meta_only else buffer[chunk_offset : chunk_offset + chunk_size])
+            yield (tensor_meta, buffer[chunk_offset : chunk_offset + chunk_size])
             chunk_offset += chunk_size
 
 

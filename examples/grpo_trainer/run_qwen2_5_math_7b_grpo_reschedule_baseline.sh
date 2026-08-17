@@ -137,7 +137,7 @@ REWARD=(
     reward_model.reward_manager=dapo
     reward.reward_manager.name=dapo
     +reward_model.reward_kwargs.strict_box_verify=${REWARD_STRICT_BOX_VERIFY}
-    reward.reward_kwargs.strict_box_verify=${REWARD_STRICT_BOX_VERIFY}
+    +reward.reward_kwargs.strict_box_verify=${REWARD_STRICT_BOX_VERIFY}
 )
 
 RAY=(

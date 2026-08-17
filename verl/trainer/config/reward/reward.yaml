@@ -22,11 +22,6 @@ reward_manager:
     path: null
     name: custom_reward_manager
 
-# Keyword arguments consumed by specialized reward managers.
-reward_kwargs:
-  # Require math DAPO answers to use the final `\boxed{}` form by default.
-  strict_box_verify: true
-
 # Inference config for reward models,
 # support both discriminative and generative models
 reward_model:
@@ -58,8 +53,6 @@ reward_model:
     load_format: auto
     layered_summon: false
     scheduling_policy: fcfs
-    full_determinism: false
-    seed: 42
     multi_stage_wake_up: false
     engine_kwargs: {}
     limit_images: null

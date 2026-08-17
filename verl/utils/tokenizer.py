@@ -218,14 +218,10 @@ def hf_processor(name_or_path, **kwargs):
                 from transformers.models.qwen3_vl import Qwen3VLModel
 
                 model_class = Qwen3VLModel
-            case "Glm4vProcessor":
+            case "Glm4vImageProcessor":
                 from transformers.models.glm4v import Glm4vModel
 
                 model_class = Glm4vModel
-            case "Glm46VProcessor":
-                from transformers.models.glm46v import Glm46VModel
-
-                model_class = Glm46VModel
             case "MllamaProcessor":
                 pass  # MllamaProcessor and MllamaModel doesn't have get_rope_index property
             case "Gemma4Processor":

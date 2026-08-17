@@ -42,9 +42,6 @@ defaults:
   # distillation config
   - distillation@distillation: distillation
 
-  # TransferQueue configuration.
-  - transfer_queue@transfer_queue: transfer_queue
-
   # load the reference default config, then apply the fields in the current yaml
   # self config override anything above
   - _self_
@@ -75,24 +72,6 @@ algorithm:
 
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
-
-  # Group filtering configuration used by DAPO and entropy-based sampling
-  filter_groups:
-
-    # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
-    _target_: verl.trainer.config.FilterGroupsConfig
-
-    # Whether to enable group filtering
-    enable: False
-
-    # Metric used to identify groups with uniform rewards, acc / score / seq_reward / seq_final_reward / ...
-    metric: null
-
-    # Maximum number of generation batches; non-positive values mean no upper limit
-    max_num_gen_batches: 0
-
-    # Maximum Sync DAPO prompt batches concurrently in flight, measured in train-batch units
-    max_inflight_gen_batches: 1
 
   # Whether to enable in-reward KL penalty
   use_kl_in_reward: False
@@ -129,6 +108,138 @@ algorithm:
 
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
+
+  # Progressive HAPPO-style prefix-follower RLVR settings.
+  hpf_rlvr:
+
+    # Whether to enable the experimental HPF masked-GRPO actor update path.
+    enable: False
+
+    # Progressive prefix block size B_prog.
+    progressive_block_size: 256
+
+    # Maximum generated response length L used by the progressive horizon.
+    max_response_length: ${data.max_response_length}
+
+    # Small constant for group-relative advantage normalization.
+    epsilon: 1e-6
+
+    # Whether to divide HPF group-relative advantages by group std.
+    std_normalize: True
+
+    # How to advance the progressive prefix horizon. "epoch" keeps the same
+    # horizon within an epoch, while "step" advances every fixed number of
+    # global training steps.
+    horizon_schedule: epoch
+
+    # Number of global training steps between horizon updates when
+    # horizon_schedule is "step".
+    horizon_update_interval_steps: 1
+
+    # Prefix KL regularizer coefficient in follower phase.
+    prefix_kl_coef: 0.001
+
+    # Suffix KL regularizer coefficient in leader phase.
+    suffix_kl_coef: 0.001
+
+    # Clip the suffix correction log-ratio to [-C, C]. Use "inf" to disable.
+    correction_clip: 5.0
+
+    # Print actor-update mini/micro-batch progress every N micro-batches.
+    # Set to 0 to disable. This is only used by the experimental HPF path.
+    progress_log_interval: 1
+
+    # Restrict HPF actor updates to a progressive local response window while
+    # keeping rollout, reward, and advantage construction unchanged. Disabled by
+    # default to preserve existing experiments.
+    local_update_window:
+
+      # Whether to only update the current suffix block.
+      enable: False
+
+      # Number of suffix tokens to train after the current horizon. If null,
+      # use progressive_block_size.
+      size: null
+
+    # Train each HPF role over complete dataloader passes instead of updating
+    # follower and leader back-to-back for every prompt batch. Disabled by
+    # default to preserve the existing Alg3 training schedule.
+    role_phased_training:
+
+      # Whether to use full-dataset follower/leader phases.
+      enable: False
+
+      # Number of complete train-set passes assigned to the follower in each
+      # fixed-horizon round.
+      follower_epochs: 1
+
+      # Number of complete train-set passes assigned to the leader in each
+      # fixed-horizon round.
+      leader_epochs: 1
+
+    # Collapse HPF into one GRPO update under a position-dependent policy:
+    # high-temperature prefix tokens followed by low-temperature suffix tokens.
+    # Disabled by default to preserve all existing HPF branches.
+    mixed_policy_grpo:
+
+      # Whether to train the mixed-temperature prefix and suffix in one update.
+      enable: False
+
+      # Number of suffix tokens to train after the prefix horizon. Null trains
+      # every valid token in the remaining tail.
+      suffix_window_size: null
+
+      # Sample paired trajectories at the current and next prefix cuts. The
+      # paired batches can be saved for inspection or consumed by the
+      # transition-aware optimization mode below.
+      transition_aware_rollout:
+
+        enable: False
+
+      # Jointly optimize current-cut GRPO and the next-cut transition penalty.
+      # This requires transition_aware_rollout and remains disabled by default.
+      transition_aware_optimization:
+
+        enable: False
+        lambda_trans: 1.0
+
+        # Emit an auditable, model-free verification bundle for smoke tests.
+        # Disabled for normal training to avoid extra host transfers and I/O.
+        diagnostics:
+          enable: False
+          sample_pairs: 8
+
+    # Two-stage prefix-follower rollout construction. Disabled by default so
+    # existing GRPO and masked HPF smoke paths remain unchanged.
+    tree_rollout:
+
+      # Whether to sample N prefixes and M suffixes instead of full responses.
+      enable: False
+
+      # Number of high-temperature prefixes per prompt.
+      num_prefixes: 4
+
+      # Number of low-temperature suffixes per prefix.
+      num_suffixes: 2
+
+      # Prefix rollout sampling parameters.
+      prefix_temperature: 1.0
+      prefix_top_p: 1.0
+
+      # Suffix rollout sampling parameters.
+      suffix_temperature: 0.25
+      suffix_top_p: 1.0
+
+    # Fresh tree sampled after the follower update for the fresh-leader branch.
+    # By default this uses the same branching factors as tree_rollout. Override
+    # these values to use a different K x L for the leader update.
+    fresh_tree_rollout:
+
+      # Number of fresh prefixes per prompt. If null, use tree_rollout.num_prefixes.
+      num_prefixes: null
+
+      # Number of fresh suffixes per fresh prefix. If null, use tree_rollout.num_suffixes.
+      num_suffixes: null
 
 # config for the trainer
 trainer:
@@ -219,7 +330,7 @@ trainer:
   device: cuda
 
   # Whether to use V1 trainer
-  use_v1: true
+  use_v1: false
 
   # V1 trainer mode configs
   v1:
@@ -240,9 +351,9 @@ trainer:
     separate_async:
 
       # Number of warmup batches to add before training loop starts
-      num_warmup_batches: 1
+      num_warmup_batches: 4
 
-      # Frequency of parameter synchronization between trainer and rollout
+      # Frequency of parameter synchronization between trainer and rollout,
       parameter_sync_step: 4
 
     # Replay buffer sampling strategy
@@ -255,9 +366,6 @@ trainer:
       # drop: drop the trajectory
       # wait: dropless, wait all trajectories that reach threshold to finish
       max_off_policy_strategy: drop
-
-      # Whether sync trainers replace failed groups that have no trajectories
-      sync_refill_failed_groups: False
 
       # Custom sampler config
       custom_sampler:
@@ -381,6 +489,70 @@ global_profiler:
       # Whether to fail on unknown stage or missing msprobe
       strict: False
 
+# TransferQueue configuration: asynchronous streaming data management system
+transfer_queue:
+
+  # Whether to enable TransferQueue
+  enable: False
+
+  # Metrics configuration for TransferQueue
+  metrics:
+
+    # If true, exposes Prometheus-style metrics via an HTTP /metrics endpoint.
+    # If false, metrics are reported through the logger only.
+    enabled: false
+
+    # HTTP port for the /metrics endpoint (0 = auto-assign a free port)
+    port: 0
+
+  # Pluggable storage and transport backend for TransferQueue
+  backend:
+
+    # Storage backend type. Options: SimpleStorage, MooncakeStore (experimental)
+    storage_backend: SimpleStorage
+
+    # Backend-specific configurations
+    # SimpleStorage: ZMQ-based in-memory storage for out-of-the-box usage
+    SimpleStorage:
+
+      # Maximum number of experience samples to hold across all storage units
+      total_storage_size: 100000
+
+      # Number of distributed storage units.
+      # Recommended: >= 2 x number of nodes for load balancing and fault tolerance.
+      num_data_storage_units: 8
+
+    # MooncakeStore (experimental): high-performance KV-based hierarchical storage
+    # that supports RDMA transport between GPU and DRAM.
+    MooncakeStore:
+
+      # Whether TransferQueue should automatically start the Mooncake metadata server.
+      # WARNING: When set to `true`, TQ will attempt to terminate any existing mooncake_master process.
+      auto_init: false
+
+      # Address of the metadata coordination server.
+      metadata_server: localhost:50123
+
+      # Address of the Mooncake master server.
+      master_server_address: localhost:50124
+
+      # Local host address visible to the Mooncake cluster.
+      # Set to "" to auto-detect using Ray's node IP.
+      local_hostname: localhost
+
+      # Transport protocol: tcp or rdma.
+      protocol: tcp
+
+      # Global memory segment size in bytes **per client** for mounting (default: 4GB)
+      global_segment_size: 4294967296
+
+      # Local buffer size in bytes **per client** (default: 1GB)
+      local_buffer_size: 1073741824
+
+      # Network device name for RDMA.
+      # Leave empty to let Mooncake auto-select available devices.
+      device_name: ""
+
 # configs for SkipManager
 skip:
 
@@ -399,22 +571,7 @@ skip:
     # Steps to skip rollout
     steps: []
 
-  # Action to take when rollout is skipped, refer to verl.utils.skip.base_skip.SkipAction
-    action: cache
-
-  # configs for RolloutTqSkip (V1 TransferQueue-based trainer)
-  rollout_tq:
-
-    # Whether to enable RolloutTqSkip
-    enable: False
-
-    # Directory to save rollout data
-    dump_dir: "~/.verl/rollout_dump"
-
-    # Steps to skip rollout
-    steps: []
-
-    # Action to take when rollout is skipped (cache | repeat)
+    # Action to take when rollout is skipped, refer to verl.utils.skip.base_skip.SkipAction
     action: cache
 
   # configs for AsyncRolloutSkip (fully async policy)

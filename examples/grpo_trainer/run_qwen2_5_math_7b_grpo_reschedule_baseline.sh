@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Pure FSDP GRPO baseline for Qwen2.5-Math-7B on local Re-Schedule data.
-#
-# This launcher intentionally excludes dynamic Re-Schedule/HPF weighting. It
-# reuses behavior log-probabilities produced by vLLM and keeps the clipped PPO
-# objective, matching the baseline used for downstream sampling comparisons.
+# Reproduce the pure GRPO baseline from "Scheduling Your LLM Reinforcement
+# Learning with Reasoning Trees". No Re-Schedule/HPF dynamic weighting is used.
 
 set -xeuo pipefail
 
 MODE=${MODE:-train}
 
-PROJECT_NAME=${PROJECT_NAME:-grpo_dapo_math_reschedule_baseline}
+PROJECT_NAME=${PROJECT_NAME:-grpo_dapo_math17k_reschedule_baseline}
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-Math-7B}
 DATA_DIR=${DATA_DIR:-./datasets}
 RUN_NAME=${RUN_NAME:-qwen2_5_math_7b_grpo_baseline_$(date +%Y%m%d_%H%M)}
@@ -21,7 +18,6 @@ PAPER_EVAL_FILES=${PAPER_EVAL_FILES:-"['${DATA_DIR}/aime24.parquet','${DATA_DIR}
 NNODES=${NNODES:-1}
 NGPUS_PER_NODE=${NGPUS_PER_NODE:-8}
 
-# These are prompt counts. VERL expands the actor mini-batch by rollout.n.
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-512}
 ROLLOUT_N=${ROLLOUT_N:-32}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
@@ -65,8 +61,6 @@ export PYTORCH_SEED=${PYTORCH_SEED:-42}
 export CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
 export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
 
-# Saving only hf_model cannot restore optimizer state. Keep a resumable
-# checkpoint and an immediately usable HF export by default.
 SAVE_CONTENTS=${SAVE_CONTENTS:-"['model','optimizer','extra','hf_model']"}
 
 if (( ROLLOUT_N < 2 )); then
@@ -129,9 +123,6 @@ ROLLOUT=(
     actor_rollout_ref.rollout.val_kwargs.top_p=${ROLLOUT_VAL_TOP_P}
 )
 
-# Treat the vLLM behavior policy as the PPO proximal anchor and avoid a second
-# actor forward for old log-probabilities. Set ROLLOUT_LOGPROB_REUSE=False for
-# compatibility experiments that deliberately recompute old log-probabilities.
 ROLLOUT_CORRECTION=(
     algorithm.rollout_correction.bypass_mode=${ROLLOUT_LOGPROB_REUSE}
     algorithm.rollout_correction.loss_type=ppo_clip
@@ -142,8 +133,6 @@ REF=(
     actor_rollout_ref.ref.fsdp_config.param_offload=${REF_PARAM_OFFLOAD}
 )
 
-# Set both the legacy and current reward paths because VERL migrates the former
-# at startup. The current reward manager reads strict_box_verify directly.
 REWARD=(
     reward_model.reward_manager=dapo
     reward.reward_manager.name=dapo

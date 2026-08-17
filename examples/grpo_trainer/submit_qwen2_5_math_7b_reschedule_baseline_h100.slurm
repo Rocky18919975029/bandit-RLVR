@@ -1,7 +1,5 @@
 #!/bin/bash
-# 8xH100 Slurm launcher for the Qwen2.5-Math-7B Re-Schedule GRPO baseline.
-# Submit this file from the repository root. Export comma-containing values in
-# the shell first and use --export=ALL because Slurm splits --export on commas.
+# Slurm wrapper for the copied Re-Schedule GRPO baseline launcher.
 
 #SBATCH --job-name=verl-resched-grpo
 #SBATCH --partition=acd_u
@@ -13,13 +11,11 @@
 #SBATCH --time=7-00:00:00
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
-##SBATCH --account=your-account
 
 set -xeuo pipefail
 
 VERL_WORKDIR=${VERL_WORKDIR:-${SLURM_SUBMIT_DIR}}
 
-# Do not globally preload the cluster's alternate glibc into conda/Python.
 LD_LIBRARY_PATH=":${LD_LIBRARY_PATH:-}:"
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH//:\/data\/apps\/glibc\/2.32\/lib:/:}
 LD_LIBRARY_PATH=${LD_LIBRARY_PATH//:\/data\/apps\/glibc\/2.32\/lib64:/:}
@@ -48,11 +44,12 @@ cd "${VERL_WORKDIR}"
 
 python - <<'PY'
 import sys
-
 import torch
+import vllm
 
 print("python:", sys.version)
 print("torch:", torch.__version__)
+print("vllm:", vllm.__version__)
 print("torch cuda:", torch.version.cuda)
 print("cuda available:", torch.cuda.is_available())
 print("device count:", torch.cuda.device_count())
@@ -105,8 +102,6 @@ export RAY_DEDUP_LOGS=${RAY_DEDUP_LOGS:-0}
 export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
 export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-spawn}
 export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
-# Ray appends a long session/sockets suffix. Keep this base path short enough
-# for Linux's 107-byte AF_UNIX socket-path limit.
 export RAY_TMP_DIR=${RAY_TMP_DIR:-/tmp/ray_${USER:-u}_${SLURM_JOB_ID}}
 export TRAINER_LOGGER=${TRAINER_LOGGER:-'["console","wandb"]'}
 export WANDB_MODE=${WANDB_MODE:-offline}
@@ -120,15 +115,9 @@ export CXX=${CXX:-$(which g++)}
 export CUDAHOSTCXX=${CUDAHOSTCXX:-$(which g++)}
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-9.0}
 
-if [ "${#RAY_TMP_DIR}" -gt 40 ]; then
-    echo "RAY_TMP_DIR is too long for Ray socket paths: ${RAY_TMP_DIR}" >&2
-    echo "Use a short node-local path such as /tmp/ray_${USER:-u}_${SLURM_JOB_ID}." >&2
-    exit 1
-fi
-
 mkdir -p "${WANDB_DIR}" "${RAY_TMP_DIR}"
 
-PROJECT_NAME=${PROJECT_NAME:-grpo_dapo_math_reschedule_baseline}
+PROJECT_NAME=${PROJECT_NAME:-grpo_dapo_math17k_reschedule_baseline}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-qwen2_5_math_7b_grpo_baseline_${SLURM_JOB_ID}}
 ROLLOUT_N=${ROLLOUT_N:-32}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-512}
@@ -143,15 +132,12 @@ SAVE_CONTENTS=${SAVE_CONTENTS:-"['model','optimizer','extra','hf_model']"}
 SAVE_FREQ=${SAVE_FREQ:-1}
 RESUME_MODE=${RESUME_MODE:-disable}
 
-# These offload defaults are safer for colocating 32 rollouts per prompt with
-# vLLM on one 8xH100 node. They remain explicit environment overrides.
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-True}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-True}
 REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-True}
 ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}
 ROLLOUT_LOGPROB_REUSE=${ROLLOUT_LOGPROB_REUSE:-True}
 
-# Prefer the actual Slurm allocation over stale login-shell environment values.
 if [[ ${SLURM_GPUS_ON_NODE:-} =~ ([0-9]+)$ ]]; then
     NGPUS_PER_NODE=${BASH_REMATCH[1]}
 else
@@ -180,10 +166,7 @@ if [ "${SMOKE_TEST}" = "1" ]; then
 fi
 
 echo "Job ID: ${SLURM_JOB_ID}"
-echo "Node list: ${SLURM_JOB_NODELIST}"
 echo "Working directory: ${VERL_WORKDIR}"
-echo "Project: ${PROJECT_NAME}"
-echo "Experiment: ${EXPERIMENT_NAME}"
 echo "Model: ${MODEL_PATH}"
 echo "Training file: ${TRAIN_FILE}"
 echo "Smoke test: ${SMOKE_TEST}"
@@ -191,12 +174,6 @@ echo "Allocated GPUs: ${NGPUS_PER_NODE}"
 echo "Rollout tensor parallelism: ${ROLLOUT_TP}"
 echo "Training prompts per step: ${TRAIN_BATCH_SIZE}"
 echo "Rollouts per prompt: ${ROLLOUT_N}"
-echo "Total training steps: ${TOTAL_TRAINING_STEPS}"
-echo "Rollout seed: ${ROLLOUT_SEED:-42}"
-echo "Reuse vLLM rollout log-probs: ${ROLLOUT_LOGPROB_REUSE}"
-echo "Strict boxed verifier: ${REWARD_STRICT_BOX_VERIFY:-True}"
-echo "Checkpoint contents: ${SAVE_CONTENTS}"
-echo "Resume mode: ${RESUME_MODE}"
 
 MODEL_PATH="${MODEL_PATH}" \
 DATA_DIR="${DATA_DIR}" \
@@ -223,4 +200,4 @@ ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
 ROLLOUT_LOGPROB_REUSE="${ROLLOUT_LOGPROB_REUSE}" \
 NNODES=1 \
 NGPUS_PER_NODE="${NGPUS_PER_NODE}" \
-bash examples/grpo_trainer/run_qwen2_5_math_7b_fsdp.sh "$@"
+bash examples/grpo_trainer/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh "$@"

@@ -129,10 +129,15 @@ tail -F "slurm-verl-resched-grpo-${JOB_ID}.out"
 Run a one-step smoke test before the full baseline:
 
 ```bash
-TRAIN_BATCH_SIZE=32 ROLLOUT_N=4 TOTAL_TRAINING_STEPS=1 TEST_FREQ=-1 \
-  sbatch --export=ALL \
+sbatch \
+  --gres=gpu:1 --cpus-per-task=12 --mem=120G --time=02:00:00 \
+  --export=ALL,SMOKE_TEST=1 \
   examples/grpo_trainer/submit_qwen2_5_math_7b_reschedule_baseline_h100.slurm
 ```
+
+`SMOKE_TEST=1` makes the job self-contained: it derives the trainer GPU count
+from the Slurm allocation and uses 8 prompts, 2 rollouts per prompt, 512
+response tokens, one training step, no validation, and no checkpoint save.
 
 Check the log for `[DAPORewardManager] strict_box_verify=True`. The default
 checkpoint contents are `model`, `optimizer`, `extra`, and `hf_model`, with a

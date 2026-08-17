@@ -105,7 +105,9 @@ export RAY_DEDUP_LOGS=${RAY_DEDUP_LOGS:-0}
 export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
 export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-spawn}
 export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
-export RAY_TMP_DIR=${RAY_TMP_DIR:-${VERL_WORKDIR}/ray_tmp/${SLURM_JOB_ID}}
+# Ray appends a long session/sockets suffix. Keep this base path short enough
+# for Linux's 107-byte AF_UNIX socket-path limit.
+export RAY_TMP_DIR=${RAY_TMP_DIR:-/tmp/ray_${USER:-u}_${SLURM_JOB_ID}}
 export TRAINER_LOGGER=${TRAINER_LOGGER:-'["console","wandb"]'}
 export WANDB_MODE=${WANDB_MODE:-offline}
 export WANDB_DIR=${WANDB_DIR:-${VERL_WORKDIR}/wandb}
@@ -117,6 +119,12 @@ export CC=${CC:-$(which gcc)}
 export CXX=${CXX:-$(which g++)}
 export CUDAHOSTCXX=${CUDAHOSTCXX:-$(which g++)}
 export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-9.0}
+
+if [ "${#RAY_TMP_DIR}" -gt 40 ]; then
+    echo "RAY_TMP_DIR is too long for Ray socket paths: ${RAY_TMP_DIR}" >&2
+    echo "Use a short node-local path such as /tmp/ray_${USER:-u}_${SLURM_JOB_ID}." >&2
+    exit 1
+fi
 
 mkdir -p "${WANDB_DIR}" "${RAY_TMP_DIR}"
 

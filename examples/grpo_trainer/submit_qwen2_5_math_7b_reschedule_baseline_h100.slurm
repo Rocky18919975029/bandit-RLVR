@@ -30,7 +30,7 @@ module load cuda/12.8
 module list
 
 CONDA_SH=${CONDA_SH:-/share/anaconda3/etc/profile.d/conda.sh}
-CONDA_ENV_PATH=${CONDA_ENV_PATH:-/data/user/zhongal/.conda/envs/verl}
+CONDA_ENV_PATH=${CONDA_ENV_PATH:-/data/user/zhongal/.conda/envs/bandit-verl}
 if [ ! -f "${CONDA_SH}" ]; then
     echo "Conda init script not found: ${CONDA_SH}" >&2
     exit 1

@@ -164,6 +164,7 @@ SIR_SEED=${SIR_SEED:-42}
 SIR_DUMP_POOL=${SIR_DUMP_POOL:-True}
 SIR_DUMP_TOKEN_LOG_PROBS=${SIR_DUMP_TOKEN_LOG_PROBS:-True}
 SIR_DUMP_DIR=${SIR_DUMP_DIR:-}
+SIR_INITIAL_REPLAY_PATH=${SIR_INITIAL_REPLAY_PATH:-}
 
 if [[ ${SLURM_GPUS_ON_NODE:-} =~ ([0-9]+)$ ]]; then
     NGPUS_PER_NODE=${BASH_REMATCH[1]}
@@ -209,6 +210,13 @@ echo "SIR enabled: ${SIR_ENABLE}"
 if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]]; then
     echo "SIR configuration: mode=${SIR_POOL_MODE} N=${ROLLOUT_N} K=${SIR_K} B=${SIR_BLOCK_LENGTH} alpha=${SIR_ALPHA}"
 fi
+if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
+    if [ ! -f "${SIR_INITIAL_REPLAY_PATH}" ]; then
+        echo "Initial SIR rollout replay file not found: ${SIR_INITIAL_REPLAY_PATH}" >&2
+        exit 1
+    fi
+    echo "Ordinary-GRPO exact initial replay: ${SIR_INITIAL_REPLAY_PATH}"
+fi
 
 MODEL_PATH="${MODEL_PATH}" \
 DATA_DIR="${DATA_DIR}" \
@@ -242,6 +250,7 @@ SIR_SEED="${SIR_SEED}" \
 SIR_DUMP_POOL="${SIR_DUMP_POOL}" \
 SIR_DUMP_TOKEN_LOG_PROBS="${SIR_DUMP_TOKEN_LOG_PROBS}" \
 SIR_DUMP_DIR="${SIR_DUMP_DIR}" \
+SIR_INITIAL_REPLAY_PATH="${SIR_INITIAL_REPLAY_PATH}" \
 NNODES=1 \
 NGPUS_PER_NODE="${NGPUS_PER_NODE}" \
 bash examples/grpo_trainer/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh "$@"

@@ -142,6 +142,10 @@ algorithm:
     # Retain all valid chosen-token log-probabilities for post-hoc analysis.
     dump_token_log_probs: True
 
+    # Optional exact control experiment: with SIR disabled, replay the initial
+    # K trajectories from a saved branched-SIR pool as an ordinary GRPO group.
+    initial_replay_path: null
+
   # Progressive HAPPO-style prefix-follower RLVR settings.
   hpf_rlvr:
 

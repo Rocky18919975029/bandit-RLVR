@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
 import numpy as np
 import pytest
 
 from verl.trainer.ppo.sir_resampling import (
     build_branched_prefix_plan,
     build_sir_selection_plan,
+    load_initial_rollout_replay,
     tempered_sir_weights,
 )
 
@@ -181,3 +184,85 @@ def test_branched_prefix_plan_reuses_cuts_for_short_initial_trajectory():
     np.testing.assert_array_equal(plan.cut_positions[:3], [1, 1, 1])
     np.testing.assert_array_equal(plan.cut_positions[3:], [0, 0, 0])
     assert plan.cut_with_replacement.all()
+
+
+def test_load_initial_rollout_replay_selects_exact_initial_k(tmp_path):
+    replay_path = tmp_path / "1.jsonl"
+    rows = []
+    for prompt_index in range(2):
+        candidates = []
+        for parent_index in range(2):
+            token_ids = [10 + prompt_index, 20 + parent_index]
+            candidates.append(
+                {
+                    "pool_index": parent_index,
+                    "sir_pool_origin": "initial",
+                    "sir_parent_index": parent_index,
+                    "sampled_token_ids": token_ids,
+                    "response_token_ids": token_ids,
+                    "sampled_token_log_probs": [-0.1, -0.2],
+                }
+            )
+        candidates.append(
+            {
+                "pool_index": 2,
+                "sir_pool_origin": "branch",
+                "sir_parent_index": 0,
+                "sampled_token_ids": [99],
+                "response_token_ids": [99],
+                "sampled_token_log_probs": [-9.0],
+            }
+        )
+        rows.append(
+            {
+                "step": 1,
+                "pool_mode": "branched_prefix",
+                "selected_count": 2,
+                "prompt": f"prompt-{prompt_index}",
+                "ground_truth": str(prompt_index),
+                "data_source": "math_dapo",
+                "candidates": candidates,
+            }
+        )
+    replay_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    replay = load_initial_rollout_replay(
+        replay_path,
+        expected_prompts=["prompt-0", "prompt-1"],
+        expected_ground_truths=["0", "1"],
+        expected_data_sources=["math_dapo", "math_dapo"],
+        initial_count=2,
+    )
+
+    assert replay.prompt_count == 2
+    assert replay.initial_count == 2
+    assert replay.response_token_ids == ((10, 20), (10, 21), (11, 20), (11, 21))
+    assert replay.response_log_probs == ((-0.1, -0.2),) * 4
+    np.testing.assert_array_equal(replay.source_pool_indices, [0, 1, 0, 1])
+
+
+def test_load_initial_rollout_replay_rejects_prompt_mismatch(tmp_path):
+    replay_path = tmp_path / "1.jsonl"
+    replay_path.write_text(
+        json.dumps(
+            {
+                "step": 1,
+                "pool_mode": "branched_prefix",
+                "selected_count": 2,
+                "prompt": "wrong",
+                "ground_truth": "0",
+                "data_source": "math_dapo",
+                "candidates": [],
+            }
+        )
+        + "\n"
+    )
+
+    with pytest.raises(ValueError, match="prompt mismatch"):
+        load_initial_rollout_replay(
+            replay_path,
+            expected_prompts=["expected"],
+            expected_ground_truths=["0"],
+            expected_data_sources=["math_dapo"],
+            initial_count=2,
+        )

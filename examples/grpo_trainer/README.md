@@ -93,6 +93,15 @@ contain only the `K` rows used for training and includes their source pool and
 draw indices. Set `SIR_DUMP_TOKEN_LOG_PROBS=False` only when storage is more
 important than post-hoc reweighting at different block lengths.
 
+For an exact one-step control, set `SIR_ENABLE=False`, `ROLLOUT_N=SIR_K`, and
+point `SIR_INITIAL_REPLAY_PATH` at the saved branched-SIR `sir_pool/1.jsonl`.
+The trainer then uses each prompt's original `sir_pool_origin=initial`
+trajectories as an ordinary GRPO group. It replays the saved token IDs and
+behavior log-probabilities, recomputes strict rewards, and leaves the normal
+GRPO/PPO update unchanged. Prompt order, chat-template output, ground truth,
+data source, token/log-prob cardinality, K, and step are checked before any
+actor update; a mismatch aborts the run.
+
 ## Post-hoc AIME 2024 validation
 
 `run_aime24_posthoc_validation_fsdp.sh` reuses VERL's ordinary validation generation

@@ -71,6 +71,11 @@ class _FakeServerManager:
         return response_ids, response_logprobs, False
 
 
+class _FailIfCalledServerManager:
+    async def generate(self, *args: Any, **kwargs: Any) -> TokenOutput:
+        raise AssertionError("vLLM generation must not be called during exact rollout replay")
+
+
 class _FakeTokenizer:
     padding_side = "right"
 
@@ -304,6 +309,40 @@ async def test_agent_loop_extra_fields_schema_stable_for_training_concat_on_cpu(
     # And the list-typed fields are actually lists (not missing / scalar).
     assert merged.non_tensor_batch["turn_scores"][0] == []
     assert merged.non_tensor_batch["tool_rewards"][0] == []
+
+
+@pytest.mark.asyncio
+async def test_single_turn_exact_replay_skips_generation_on_cpu():
+    config = OmegaConf.create(
+        {
+            "actor_rollout_ref": {
+                "rollout": {"prompt_length": 16, "response_length": 16, "multi_turn": {"tool_config_path": None}},
+                "model": {"path": "dummy-model", "tokenizer_path": "dummy-model"},
+            },
+            "data": {"tool_config_path": None, "apply_chat_template_kwargs": {}},
+        }
+    )
+    loop = SingleTurnAgentLoop(
+        trainer_config=DictConfigWrap(config),
+        server_manager=_FailIfCalledServerManager(),
+        tokenizer=_FakeTokenizer(),
+        processor=None,
+        dataset_cls=RLHFDataset,
+        data_config=DictConfigWrap(config.data),
+    )
+
+    output = await loop.run(
+        sampling_params={"temperature": 1.0},
+        raw_prompt=[{"role": "user", "content": "hi"}],
+        sir_replay_response_token_ids=[201, 202, 203],
+        sir_replay_response_log_probs=[-0.1, -0.2, -0.3],
+    )
+
+    assert output.prompt_ids == [101, 102]
+    assert output.response_ids == [201, 202, 203]
+    assert output.response_mask == [1, 1, 1]
+    assert output.response_logprobs == [-0.1, -0.2, -0.3]
+    assert output.extra_fields["sir_exact_replay"] is True
 
 
 @pytest.mark.asyncio

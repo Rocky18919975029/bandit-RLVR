@@ -62,9 +62,11 @@ from verl.trainer.ppo.metric_utils import (
 )
 from verl.trainer.ppo.reward import extract_reward
 from verl.trainer.ppo.sir_resampling import (
+    InitialRolloutReplay,
     SIRSelectionPlan,
     build_branched_prefix_plan,
     build_sir_selection_plan,
+    load_initial_rollout_replay,
 )
 from verl.trainer.ppo.utils import (
     Role,
@@ -940,6 +942,74 @@ class RayPPOTrainer:
             flush=True,
         )
         return pool_output, metrics
+
+    def _prepare_sir_initial_replay(
+        self,
+        gen_batch: DataProto,
+        repeated_gen_batch: DataProto,
+        *,
+        replay_path: str,
+        initial_count: int,
+    ) -> InitialRolloutReplay:
+        """Attach exact initial responses from a previous branched-SIR step."""
+        if self.processor is not None:
+            raise ValueError("Exact SIR initial-rollout replay currently supports text-only models")
+        if "raw_prompt" not in gen_batch.non_tensor_batch:
+            raise ValueError("Exact SIR initial-rollout replay requires raw_prompt in the training batch")
+
+        from verl.utils.chat_template import apply_chat_template
+        from verl.utils.tokenizer import normalize_token_ids
+
+        template_kwargs = dict(self.config.data.get("apply_chat_template_kwargs", {}) or {})
+        expected_prompts = []
+        max_prompt_length = int(self.config.data.max_prompt_length)
+        for raw_prompt in gen_batch.non_tensor_batch["raw_prompt"]:
+            prompt_ids = normalize_token_ids(
+                apply_chat_template(
+                    self.tokenizer,
+                    list(raw_prompt),
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    **template_kwargs,
+                )
+            )
+            prompt_ids = prompt_ids[-max_prompt_length:]
+            expected_prompts.append(self.tokenizer.decode(prompt_ids, skip_special_tokens=True))
+
+        reward_models = gen_batch.non_tensor_batch.get("reward_model")
+        data_sources = gen_batch.non_tensor_batch.get("data_source")
+        if reward_models is None or data_sources is None:
+            raise ValueError("Exact SIR initial-rollout replay requires reward_model and data_source")
+        ground_truths = [
+            reward_model.get("ground_truth") if isinstance(reward_model, dict) else None
+            for reward_model in reward_models
+        ]
+        replay = load_initial_rollout_replay(
+            replay_path,
+            expected_prompts=expected_prompts,
+            expected_ground_truths=ground_truths,
+            expected_data_sources=list(data_sources),
+            initial_count=initial_count,
+            expected_step=self.global_steps,
+        )
+        if any(len(token_ids) > int(self.config.data.max_response_length) for token_ids in replay.response_token_ids):
+            raise ValueError(
+                "Exact SIR initial-rollout replay contains a response longer than data.max_response_length"
+            )
+
+        token_id_array = np.empty(len(replay.response_token_ids), dtype=object)
+        token_id_array[:] = [list(token_ids) for token_ids in replay.response_token_ids]
+        log_prob_array = np.empty(len(replay.response_log_probs), dtype=object)
+        log_prob_array[:] = [list(log_probs) for log_probs in replay.response_log_probs]
+        repeated_gen_batch.non_tensor_batch["sir_replay_response_token_ids"] = token_id_array
+        repeated_gen_batch.non_tensor_batch["sir_replay_response_log_probs"] = log_prob_array
+        print(
+            "[SIR CONTROL] exact initial-rollout replay prepared "
+            f"step={self.global_steps} prompts={replay.prompt_count} K={replay.initial_count} "
+            f"trajectories={len(replay.response_token_ids)} source={replay.source_path}",
+            flush=True,
+        )
+        return replay
 
     def _apply_sir_resampling(
         self,
@@ -3882,7 +3952,44 @@ class RayPPOTrainer:
         sir_config = self.config.algorithm.get("sir", {})
         sir_enabled = self._parse_hpf_bool(sir_config.get("enable", False), False)
         sir_pool_mode = str(sir_config.get("pool_mode", "independent")).strip().lower()
+        sir_initial_replay_path_value = sir_config.get("initial_replay_path", None)
+        sir_initial_replay_path = (
+            str(sir_initial_replay_path_value).strip() if sir_initial_replay_path_value else ""
+        )
         sir_branched_pool = False
+        if sir_initial_replay_path:
+            replay_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
+            replay_initial_count = int(sir_config.get("selected_count"))
+            if sir_enabled:
+                raise ValueError(
+                    "Exact SIR initial-rollout replay is an ordinary GRPO control and requires SIR disabled"
+                )
+            if self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO:
+                raise ValueError("Exact SIR initial-rollout replay requires algorithm.adv_estimator=grpo")
+            if replay_rollout_n != replay_initial_count:
+                raise ValueError(
+                    "Exact SIR initial-rollout replay requires rollout.n == algorithm.sir.selected_count; "
+                    f"got rollout.n={replay_rollout_n}, K={replay_initial_count}"
+                )
+            if int(self.total_training_steps) != 1:
+                raise ValueError(
+                    "Exact SIR initial-rollout replay is restricted to a one-step control run; "
+                    f"got total_training_steps={self.total_training_steps}"
+                )
+            if not self._parse_hpf_bool(
+                self.config.actor_rollout_ref.rollout.get("calculate_log_probs", False), False
+            ):
+                raise ValueError("Exact SIR initial-rollout replay requires rollout.calculate_log_probs=True")
+            rollout_corr_config = self.config.algorithm.get("rollout_correction", {})
+            if not self._parse_hpf_bool(rollout_corr_config.get("bypass_mode", False), False):
+                raise ValueError("Exact SIR initial-rollout replay requires rollout_correction.bypass_mode=True")
+            if self._parse_hpf_bool(hpf_config.get("enable", False), False) or mixed_policy_grpo:
+                raise ValueError("Exact SIR initial-rollout replay cannot be combined with HPF rollout paths")
+            print(
+                "[SIR CONTROL] enabled exact_initial_replay "
+                f"K={replay_initial_count} source={sir_initial_replay_path}",
+                flush=True,
+            )
         if sir_enabled:
             rollout_pool_size = int(self.config.actor_rollout_ref.rollout.n)
             sir_selected_count = int(sir_config.get("selected_count"))
@@ -4070,6 +4177,15 @@ class RayPPOTrainer:
                     combined_gen_batch = gen_batch_output
                     num_sampled_prompts = len(gen_batch_output)
 
+                initial_replay = None
+                if sir_initial_replay_path:
+                    initial_replay = self._prepare_sir_initial_replay(
+                        gen_batch,
+                        combined_gen_batch,
+                        replay_path=sir_initial_replay_path,
+                        initial_count=initial_generation_count,
+                    )
+
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     # generate a batch
@@ -4107,6 +4223,31 @@ class RayPPOTrainer:
                                     flush=True,
                                 )
                             combined_gen_output = self.async_rollout_manager.generate_sequences(combined_gen_batch)
+                            if initial_replay is not None:
+                                replay_internal_keys = [
+                                    key
+                                    for key in (
+                                        "sir_replay_response_token_ids",
+                                        "sir_replay_response_log_probs",
+                                    )
+                                    if key in combined_gen_output.non_tensor_batch
+                                ]
+                                if replay_internal_keys:
+                                    combined_gen_output.pop(non_tensor_batch_keys=replay_internal_keys)
+                                combined_gen_output.non_tensor_batch["sir_pool_origin"] = np.full(
+                                    len(combined_gen_output), "initial", dtype=object
+                                )
+                                combined_gen_output.non_tensor_batch["sir_parent_index"] = np.tile(
+                                    np.arange(initial_generation_count, dtype=np.int32), len(gen_batch)
+                                )
+                                combined_gen_output.non_tensor_batch["sir_pool_index"] = (
+                                    initial_replay.source_pool_indices.copy()
+                                )
+                                print(
+                                    "[SIR CONTROL] exact initial-rollout replay materialized "
+                                    f"step={self.global_steps} trajectories={len(combined_gen_output)}",
+                                    flush=True,
+                                )
                             if sir_branched_pool:
                                 print(
                                     "[SIR] initial rollout done "

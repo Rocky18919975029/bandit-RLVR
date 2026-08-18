@@ -24,7 +24,9 @@ the EOS probability, and has no synthetic post-EOS terms.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -96,6 +98,126 @@ class BranchedPrefixPlan:
     branch_local_indices: np.ndarray
     cut_positions: np.ndarray
     cut_with_replacement: np.ndarray
+
+
+@dataclass(frozen=True)
+class InitialRolloutReplay:
+    """Exact initial trajectories recovered from a branched-SIR pool dump."""
+
+    source_path: str
+    prompt_count: int
+    initial_count: int
+    response_token_ids: tuple[tuple[int, ...], ...]
+    response_log_probs: tuple[tuple[float, ...], ...]
+    source_pool_indices: np.ndarray
+
+
+def load_initial_rollout_replay(
+    path: str | Path,
+    *,
+    expected_prompts: list[str],
+    expected_ground_truths: list[object],
+    expected_data_sources: list[object],
+    initial_count: int,
+    expected_step: int = 1,
+) -> InitialRolloutReplay:
+    """Load and fail-closed validate the initial K rows from a saved SIR pool."""
+    source_path = Path(path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"SIR initial-rollout replay file does not exist: {source_path}")
+    if initial_count < 2:
+        raise ValueError(f"initial_count must be at least 2, got {initial_count}")
+    expected_count = len(expected_prompts)
+    if len(expected_ground_truths) != expected_count or len(expected_data_sources) != expected_count:
+        raise ValueError("Expected prompt, ground-truth, and data-source lists must have equal lengths")
+
+    response_token_ids: list[tuple[int, ...]] = []
+    response_log_probs: list[tuple[float, ...]] = []
+    source_pool_indices: list[int] = []
+    row_count = 0
+    with source_path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            if row_count >= expected_count:
+                raise ValueError(
+                    f"Replay pool has more than the expected {expected_count} prompt rows: {source_path}"
+                )
+            row = json.loads(line)
+            if int(row.get("step", -1)) != expected_step:
+                raise ValueError(
+                    f"Replay pool step mismatch at line {line_number}: "
+                    f"expected {expected_step}, got {row.get('step')!r}"
+                )
+            if row.get("pool_mode") != "branched_prefix":
+                raise ValueError(
+                    f"Replay pool line {line_number} is not branched_prefix: {row.get('pool_mode')!r}"
+                )
+            if int(row.get("selected_count", -1)) != initial_count:
+                raise ValueError(
+                    f"Replay pool K mismatch at line {line_number}: "
+                    f"expected {initial_count}, got {row.get('selected_count')!r}"
+                )
+            if str(row.get("prompt")) != expected_prompts[row_count]:
+                raise ValueError(
+                    f"Replay prompt mismatch at prompt index {row_count}; "
+                    "the data order or chat template differs from the source SIR run"
+                )
+            if str(row.get("ground_truth")) != str(expected_ground_truths[row_count]):
+                raise ValueError(f"Replay ground truth mismatch at prompt index {row_count}")
+            if str(row.get("data_source")) != str(expected_data_sources[row_count]):
+                raise ValueError(f"Replay data source mismatch at prompt index {row_count}")
+
+            initial_candidates = [
+                candidate
+                for candidate in row.get("candidates", [])
+                if candidate.get("sir_pool_origin") == "initial"
+            ]
+            initial_candidates.sort(key=lambda candidate: int(candidate.get("sir_parent_index", -1)))
+            parent_indices = [int(candidate.get("sir_parent_index", -1)) for candidate in initial_candidates]
+            if parent_indices != list(range(initial_count)):
+                raise ValueError(
+                    f"Replay prompt {row_count} has invalid initial parent indices: {parent_indices}"
+                )
+
+            for candidate in initial_candidates:
+                sampled_ids = tuple(int(token_id) for token_id in candidate.get("sampled_token_ids", []))
+                response_ids = tuple(int(token_id) for token_id in candidate.get("response_token_ids", []))
+                log_probs = tuple(float(log_prob) for log_prob in candidate.get("sampled_token_log_probs", []))
+                if not sampled_ids:
+                    raise ValueError(f"Replay prompt {row_count} contains an empty initial trajectory")
+                if sampled_ids != response_ids:
+                    raise ValueError(
+                        f"Replay prompt {row_count} initial candidate {candidate.get('pool_index')} "
+                        "contains non-sampled response tokens and cannot be replayed as ordinary single-turn GRPO"
+                    )
+                if len(log_probs) != len(sampled_ids):
+                    raise ValueError(
+                        f"Replay prompt {row_count} initial candidate {candidate.get('pool_index')} has "
+                        f"{len(sampled_ids)} tokens but {len(log_probs)} log-probabilities"
+                    )
+                if not np.all(np.isfinite(np.asarray(log_probs, dtype=np.float64))):
+                    raise ValueError(f"Replay prompt {row_count} contains non-finite behavior log-probabilities")
+                response_token_ids.append(sampled_ids)
+                response_log_probs.append(log_probs)
+                source_pool_indices.append(int(candidate["pool_index"]))
+            row_count += 1
+
+    if row_count != expected_count:
+        raise ValueError(f"Replay pool has {row_count} prompt rows, expected {expected_count}: {source_path}")
+    expected_trajectories = expected_count * initial_count
+    if len(response_token_ids) != expected_trajectories:
+        raise ValueError(
+            f"Replay pool yielded {len(response_token_ids)} initial trajectories, expected {expected_trajectories}"
+        )
+    return InitialRolloutReplay(
+        source_path=str(source_path),
+        prompt_count=expected_count,
+        initial_count=initial_count,
+        response_token_ids=tuple(response_token_ids),
+        response_log_probs=tuple(response_log_probs),
+        source_pool_indices=np.asarray(source_pool_indices, dtype=np.int64),
+    )
 
 
 def stable_seed(*parts: object) -> int:

@@ -617,7 +617,12 @@ class AgentLoopWorker:
                 tools=ToolListWrap(self.tools),
             )
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
+            postprocess_kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if key not in {"sir_replay_response_token_ids", "sir_replay_response_log_probs"}
+            }
+            return await self._agent_loop_postprocess(output, trajectory["validate"], **postprocess_kwargs)
 
     def _pad_token_ids(
         self,

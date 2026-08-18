@@ -52,6 +52,7 @@ SIR_SEED=${SIR_SEED:-42}
 SIR_DUMP_POOL=${SIR_DUMP_POOL:-True}
 SIR_DUMP_TOKEN_LOG_PROBS=${SIR_DUMP_TOKEN_LOG_PROBS:-True}
 SIR_DUMP_DIR=${SIR_DUMP_DIR:-}
+SIR_INITIAL_REPLAY_PATH=${SIR_INITIAL_REPLAY_PATH:-}
 
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
@@ -80,6 +81,24 @@ if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
     && (( SIR_K < 2 || SIR_K > ROLLOUT_N )); then
     echo "SIR requires 2 <= SIR_K <= ROLLOUT_N; got K=${SIR_K}, N=${ROLLOUT_N}" >&2
     exit 1
+fi
+if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
+    if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]]; then
+        echo "SIR_INITIAL_REPLAY_PATH is an ordinary-GRPO control and requires SIR_ENABLE=False" >&2
+        exit 1
+    fi
+    if (( ROLLOUT_N != SIR_K )); then
+        echo "Initial replay requires ROLLOUT_N == SIR_K; got ${ROLLOUT_N} != ${SIR_K}" >&2
+        exit 1
+    fi
+    if (( TOTAL_TRAINING_STEPS != 1 )); then
+        echo "Initial replay is restricted to TOTAL_TRAINING_STEPS=1" >&2
+        exit 1
+    fi
+    if [ ! -f "${SIR_INITIAL_REPLAY_PATH}" ]; then
+        echo "Initial SIR rollout replay file not found: ${SIR_INITIAL_REPLAY_PATH}" >&2
+        exit 1
+    fi
 fi
 if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
     && [ "${SIR_POOL_MODE}" = "branched_prefix" ] \
@@ -160,6 +179,9 @@ SIR=(
 )
 if [ -n "${SIR_DUMP_DIR}" ]; then
     SIR+=(algorithm.sir.dump_dir="${SIR_DUMP_DIR}")
+fi
+if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
+    SIR+=(algorithm.sir.initial_replay_path="${SIR_INITIAL_REPLAY_PATH}")
 fi
 
 REF=(

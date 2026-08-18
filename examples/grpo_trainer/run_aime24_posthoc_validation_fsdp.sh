@@ -17,6 +17,7 @@ EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-1.0}
 EVAL_TOP_P=${EVAL_TOP_P:-1.0}
 EVAL_SEED=${EVAL_SEED:-42}
 EXPECTED_PROBLEMS=${EXPECTED_PROBLEMS:-30}
+VALIDATION_PROBLEM_BATCH_SIZE=${VALIDATION_PROBLEM_BATCH_SIZE:-1}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-3072}
 TRAINER_LOGGER=${TRAINER_LOGGER:-'["console"]'}
@@ -24,6 +25,10 @@ WANDB_MODE=${WANDB_MODE:-disabled}
 
 if (( EVAL_N < 1 )); then
     echo "EVAL_N must be positive; got ${EVAL_N}" >&2
+    exit 1
+fi
+if (( VALIDATION_PROBLEM_BATCH_SIZE < 1 )); then
+    echo "VALIDATION_PROBLEM_BATCH_SIZE must be positive; got ${VALIDATION_PROBLEM_BATCH_SIZE}" >&2
     exit 1
 fi
 if [ ! -f "${AIME24_FILE}" ]; then
@@ -68,6 +73,7 @@ echo "  requested model: ${REQUESTED_MODEL_PATH}"
 echo "  resolved HF model: ${MODEL_PATH}"
 echo "  dataset: ${AIME24_FILE}"
 echo "  samples/problem: ${EVAL_N}"
+echo "  problems/generation batch: ${VALIDATION_PROBLEM_BATCH_SIZE}"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
 echo "  max response tokens: ${MAX_RESPONSE_LENGTH}"
 echo "  output: ${OUTPUT_DIR}"
@@ -91,7 +97,9 @@ MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH}" \
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH}" \
 REWARD_STRICT_BOX_VERIFY=True \
 SIR_ENABLE=False \
-bash "${SCRIPT_DIR}/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh" "$@"
+bash "${SCRIPT_DIR}/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh" \
+    data.val_batch_size="${VALIDATION_PROBLEM_BATCH_SIZE}" \
+    "$@"
 
 python3 "${SCRIPT_DIR}/analyze_aime24_validation.py" \
     --input "${RAW_DIR}" \

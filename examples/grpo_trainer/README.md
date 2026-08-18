@@ -101,6 +101,10 @@ unbiased pass@k. `MODEL_PATH` may point to an untrained Hugging Face base model,
 an exported `actor/huggingface` directory, or its enclosing `global_step_*`
 directory. The defaults generate 32 completions per AIME 2024 problem at
 temperature 1.0 and top-p 1.0 with a 3072-token response limit.
+Validation runs one problem at a time by default and displays a live
+`completed/total` rollout progress bar with running accuracy. Increase
+`VALIDATION_PROBLEM_BATCH_SIZE` to trade less frequent updates for higher
+generation concurrency.
 
 ```bash
 MODEL_PATH=/path/to/global_step_10 \

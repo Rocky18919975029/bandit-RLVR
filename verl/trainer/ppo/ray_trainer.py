@@ -1183,6 +1183,16 @@ class RayPPOTrainer:
         sample_turns = []
         sample_uids = []
 
+        validation_rollout_count = len(self.val_dataset) * int(
+            self.config.actor_rollout_ref.rollout.val_kwargs.n
+        )
+        validation_progress = tqdm(
+            total=validation_rollout_count,
+            desc="Validation Rollouts",
+            unit="rollout",
+            dynamic_ncols=True,
+        )
+
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -1262,11 +1272,20 @@ class RayPPOTrainer:
                 else:
                     reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
 
+            validation_progress.update(len(scores))
+            acc_values = reward_extra_infos_dict.get("acc", [])
+            if acc_values:
+                validation_progress.set_postfix(
+                    acc=f"{sum(bool(value) for value in acc_values) / len(acc_values):.3f}"
+                )
+
             # collect num_turns of each prompt
             if "__num_turns__" in test_batch.non_tensor_batch:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+
+        validation_progress.close()
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 

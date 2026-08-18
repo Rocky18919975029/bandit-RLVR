@@ -4,9 +4,9 @@
 #SBATCH --partition=acd_u
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=12
-#SBATCH --gres=gpu:1
-#SBATCH --mem=120G
+#SBATCH --cpus-per-task=96
+#SBATCH --gres=gpu:8
+#SBATCH --mem=500G
 #SBATCH --time=12:00:00
 #SBATCH --exclude=ACD1-16
 #SBATCH --output=slurm-%x-%j.out
@@ -66,11 +66,17 @@ else
     IFS=',' read -r -a VISIBLE_GPU_IDS <<< "${CUDA_VISIBLE_DEVICES}"
     NGPUS_PER_NODE=${#VISIBLE_GPU_IDS[@]}
 fi
-ROLLOUT_TP=${ROLLOUT_TP:-${NGPUS_PER_NODE}}
+ROLLOUT_TP=${ROLLOUT_TP:-1}
 if (( ROLLOUT_TP > NGPUS_PER_NODE )); then
     echo "ROLLOUT_TP=${ROLLOUT_TP} exceeds allocated GPUs=${NGPUS_PER_NODE}" >&2
     exit 1
 fi
+if (( NGPUS_PER_NODE % ROLLOUT_TP != 0 )); then
+    echo "Allocated GPUs=${NGPUS_PER_NODE} must be divisible by ROLLOUT_TP=${ROLLOUT_TP}" >&2
+    exit 1
+fi
+ROLLOUT_REPLICAS=$((NGPUS_PER_NODE / ROLLOUT_TP))
+echo "Rollout topology: GPUs=${NGPUS_PER_NODE} TP=${ROLLOUT_TP} replicas=${ROLLOUT_REPLICAS}"
 
 python - <<'PY'
 import os

@@ -100,11 +100,14 @@ and DAPO strict-boxed reward manager, then reports sample accuracy and standard
 unbiased pass@k. `MODEL_PATH` may point to an untrained Hugging Face base model,
 an exported `actor/huggingface` directory, or its enclosing `global_step_*`
 directory. The defaults generate 32 completions per AIME 2024 problem at
-temperature 1.0 and top-p 1.0 with a 3072-token response limit.
-Validation runs one problem at a time by default and displays a live
-`completed/total` rollout progress bar with running accuracy. Increase
-`VALIDATION_PROBLEM_BATCH_SIZE` to trade less frequent updates for higher
-generation concurrency.
+temperature 1.0 and top-p 1.0 with a 3072-token response limit. Because the
+local AIME parquet may already contain 32 physical copies of every problem,
+the launcher first deduplicates it by `prompt` and requires exactly 30 unique
+problems. It then applies VERL's validation `n=32`, for exactly 960 rollouts;
+the source-row, unique-problem, and expected-rollout counts are printed before
+model initialization. Validation displays a live `completed/total` rollout
+progress bar with running accuracy. `VALIDATION_PROBLEM_BATCH_SIZE` defaults to
+8 to keep eight data-parallel rollout replicas occupied.
 
 ```bash
 MODEL_PATH=/path/to/global_step_10 \

@@ -17,7 +17,7 @@ EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-1.0}
 EVAL_TOP_P=${EVAL_TOP_P:-1.0}
 EVAL_SEED=${EVAL_SEED:-42}
 EXPECTED_PROBLEMS=${EXPECTED_PROBLEMS:-30}
-VALIDATION_PROBLEM_BATCH_SIZE=${VALIDATION_PROBLEM_BATCH_SIZE:-1}
+VALIDATION_PROBLEM_BATCH_SIZE=${VALIDATION_PROBLEM_BATCH_SIZE:-8}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-3072}
 TRAINER_LOGGER=${TRAINER_LOGGER:-'["console"]'}
@@ -29,6 +29,10 @@ if (( EVAL_N < 1 )); then
 fi
 if (( VALIDATION_PROBLEM_BATCH_SIZE < 1 )); then
     echo "VALIDATION_PROBLEM_BATCH_SIZE must be positive; got ${VALIDATION_PROBLEM_BATCH_SIZE}" >&2
+    exit 1
+fi
+if (( EXPECTED_PROBLEMS < 1 )); then
+    echo "EXPECTED_PROBLEMS must be positive; got ${EXPECTED_PROBLEMS}" >&2
     exit 1
 fi
 if [ ! -f "${AIME24_FILE}" ]; then
@@ -61,6 +65,7 @@ RUN_NAME=${RUN_NAME:-aime24_${MODEL_TAG}_n${EVAL_N}_seed${EVAL_SEED}}
 PROJECT_NAME=${PROJECT_NAME:-aime24_posthoc_validation}
 OUTPUT_DIR=${OUTPUT_DIR:-${REPO_ROOT}/validation_data/${PROJECT_NAME}/${RUN_NAME}}
 RAW_DIR=${RAW_DIR:-${OUTPUT_DIR}/raw}
+UNIQUE_AIME24_FILE=${UNIQUE_AIME24_FILE:-${OUTPUT_DIR}/aime24.unique.parquet}
 mkdir -p "${RAW_DIR}"
 if compgen -G "${RAW_DIR}/*.jsonl" >/dev/null; then
     echo "Raw validation directory already contains JSONL files: ${RAW_DIR}" >&2
@@ -68,10 +73,25 @@ if compgen -G "${RAW_DIR}/*.jsonl" >/dev/null; then
     exit 1
 fi
 
+# Some AIME parquet files physically repeat each of the 30 prompts 32 times.
+# VERL applies rollout.val_kwargs.n to every input row, so feeding those 960
+# rows directly with n=32 would accidentally request 30,720 completions.
+python3 "${SCRIPT_DIR}/prepare_aime24_validation.py" \
+    --input "${AIME24_FILE}" \
+    --output "${UNIQUE_AIME24_FILE}" \
+    --expected-problems "${EXPECTED_PROBLEMS}"
+
+EXPECTED_ROLLOUTS=$((EXPECTED_PROBLEMS * EVAL_N))
+echo "AIME24 rollout preflight"
+echo "  unique input rows: ${EXPECTED_PROBLEMS}"
+echo "  rollouts/problem: ${EVAL_N}"
+echo "  expected total rollouts: ${EXPECTED_ROLLOUTS}"
+
 echo "AIME24 post-hoc validation"
 echo "  requested model: ${REQUESTED_MODEL_PATH}"
 echo "  resolved HF model: ${MODEL_PATH}"
-echo "  dataset: ${AIME24_FILE}"
+echo "  source dataset: ${AIME24_FILE}"
+echo "  validation dataset: ${UNIQUE_AIME24_FILE}"
 echo "  samples/problem: ${EVAL_N}"
 echo "  problems/generation batch: ${VALIDATION_PROBLEM_BATCH_SIZE}"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
@@ -82,7 +102,7 @@ MODE=eval \
 MODEL_PATH="${MODEL_PATH}" \
 DATA_DIR="${DATA_DIR}" \
 TRAIN_FILE="${TRAIN_FILE}" \
-VAL_FILES="['${AIME24_FILE}']" \
+VAL_FILES="['${UNIQUE_AIME24_FILE}']" \
 PROJECT_NAME="${PROJECT_NAME}" \
 RUN_NAME="${RUN_NAME}" \
 VALIDATION_DATA_DIR="${RAW_DIR}" \

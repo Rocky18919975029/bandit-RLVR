@@ -23,6 +23,7 @@ from examples.grpo_trainer.analyze_aime24_validation import (
     unbiased_pass_at_k,
     write_results,
 )
+from examples.grpo_trainer.prepare_aime24_validation import canonical_prompt, prepare_unique_aime24
 
 
 def test_unbiased_pass_at_k():
@@ -81,3 +82,33 @@ def test_validation_count_mismatch_is_rejected():
     rows = [{"uid": "one", "data_source": "aime24", "acc": True}]
     with pytest.raises(ValueError, match="Expected 2 problems"):
         summarize_validation(rows, [1], expected_problems=2)
+
+
+def test_prepare_unique_aime24_removes_physical_repetitions(tmp_path):
+    pandas = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+
+    prompts = [
+        [{"role": "user", "content": "problem zero"}],
+        [{"role": "user", "content": "problem one"}],
+        [{"role": "user", "content": "problem two"}],
+    ]
+    source = tmp_path / "repeated.parquet"
+    output = tmp_path / "unique.parquet"
+    pandas.DataFrame(
+        [
+            {"prompt": prompt, "reward_model": {"ground_truth": str(index)}}
+            for index, prompt in enumerate(prompts)
+            for _ in range(4)
+        ]
+    ).to_parquet(source, index=False)
+
+    summary = prepare_unique_aime24(source, output, expected_problems=3)
+    deduplicated = pandas.read_parquet(output)
+
+    assert summary["source_rows"] == 12
+    assert summary["unique_problems"] == 3
+    assert summary["minimum_source_repetitions"] == 4
+    assert summary["maximum_source_repetitions"] == 4
+    assert len(deduplicated) == 3
+    assert deduplicated["prompt"].map(canonical_prompt).nunique() == 3

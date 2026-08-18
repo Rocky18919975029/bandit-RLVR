@@ -95,6 +95,7 @@ class BranchedPrefixPlan:
     parent_local_indices: np.ndarray
     branch_local_indices: np.ndarray
     cut_positions: np.ndarray
+    cut_with_replacement: np.ndarray
 
 
 def stable_seed(*parts: object) -> int:
@@ -112,11 +113,13 @@ def build_branched_prefix_plan(
     seed: int,
     global_step: int,
 ) -> BranchedPrefixPlan:
-    """Choose distinct nonterminal prefix cuts for every initial trajectory.
+    """Choose nonterminal prefix cuts for every initial trajectory.
 
     ``response_lengths`` must contain K initial trajectories contiguously for
     each prompt. A cut position ``c`` retains tokens ``[:c]``. The terminal
     boundary is excluded so a branch always generates at least one fresh token.
+    Cuts are distinct when enough positions exist; short responses sample the
+    available cuts with replacement. A one-token response falls back to cut 0.
     """
     lengths = np.asarray(response_lengths, dtype=np.int64)
     if lengths.ndim != 1 or lengths.size == 0:
@@ -138,26 +141,24 @@ def build_branched_prefix_plan(
     parent_local_indices: list[int] = []
     branch_local_indices: list[int] = []
     cut_positions: list[int] = []
+    cut_with_replacement: list[bool] = []
     for parent_global_index, response_length in enumerate(lengths.tolist()):
         prompt_index, parent_local_index = divmod(parent_global_index, initial_count)
         max_cut = min(block_length, response_length - 1)
-        if max_cut < branches_per_initial:
-            raise ValueError(
-                "branched SIR cannot choose distinct nonterminal prefix cuts: "
-                f"prompt={prompt_index}, parent={parent_local_index}, response_length={response_length}, "
-                f"eligible_cuts={max(max_cut, 0)}, required={branches_per_initial}"
-            )
+        eligible_cuts = np.arange(1, max_cut + 1, dtype=np.int64) if max_cut >= 1 else np.asarray([0], dtype=np.int64)
+        use_replacement = eligible_cuts.size < branches_per_initial
         parent_seed = stable_seed(seed, global_step, prompt_index, parent_local_index, "prefix-cuts")
         parent_cuts = np.random.default_rng(parent_seed).choice(
-            np.arange(1, max_cut + 1, dtype=np.int64),
+            eligible_cuts,
             size=branches_per_initial,
-            replace=False,
+            replace=use_replacement,
         )
         for branch_local_index, cut_position in enumerate(parent_cuts.tolist()):
             parent_global_indices.append(parent_global_index)
             parent_local_indices.append(parent_local_index)
             branch_local_indices.append(branch_local_index)
             cut_positions.append(cut_position)
+            cut_with_replacement.append(use_replacement)
 
     return BranchedPrefixPlan(
         pool_size=pool_size,
@@ -167,6 +168,7 @@ def build_branched_prefix_plan(
         parent_local_indices=np.asarray(parent_local_indices, dtype=np.int64),
         branch_local_indices=np.asarray(branch_local_indices, dtype=np.int64),
         cut_positions=np.asarray(cut_positions, dtype=np.int64),
+        cut_with_replacement=np.asarray(cut_with_replacement, dtype=bool),
     )
 
 

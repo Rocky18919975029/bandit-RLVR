@@ -157,6 +157,7 @@ def test_branched_prefix_plan_expands_k_initial_trajectories_to_n():
 
     assert first.branches_per_initial == 3
     assert len(first.cut_positions) == 12
+    assert not first.cut_with_replacement.any()
     np.testing.assert_array_equal(first.cut_positions, second.cut_positions)
     np.testing.assert_array_equal(first.parent_global_indices, np.repeat(np.arange(4), 3))
     np.testing.assert_array_equal(first.parent_local_indices, np.tile(np.repeat(np.arange(2), 3), 2))
@@ -167,13 +168,16 @@ def test_branched_prefix_plan_expands_k_initial_trajectories_to_n():
         assert np.all((1 <= parent_cuts) & (parent_cuts <= 6))
 
 
-def test_branched_prefix_plan_rejects_short_initial_trajectory():
-    with pytest.raises(ValueError, match="distinct nonterminal prefix cuts"):
-        build_branched_prefix_plan(
-            np.asarray([3, 10]),
-            pool_size=8,
-            initial_count=2,
-            block_length=6,
-            seed=42,
-            global_step=1,
-        )
+def test_branched_prefix_plan_reuses_cuts_for_short_initial_trajectory():
+    plan = build_branched_prefix_plan(
+        np.asarray([2, 1]),
+        pool_size=8,
+        initial_count=2,
+        block_length=6,
+        seed=42,
+        global_step=1,
+    )
+
+    np.testing.assert_array_equal(plan.cut_positions[:3], [1, 1, 1])
+    np.testing.assert_array_equal(plan.cut_positions[3:], [0, 0, 0])
+    assert plan.cut_with_replacement.all()

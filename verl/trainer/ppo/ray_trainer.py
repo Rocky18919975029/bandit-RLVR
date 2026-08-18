@@ -733,6 +733,7 @@ class RayPPOTrainer:
                     "sir_parent_index",
                     "sir_branch_index",
                     "sir_cut_position",
+                    "sir_cut_with_replacement",
                 ):
                     if metadata_key in pool_batch.non_tensor_batch:
                         value = pool_batch.non_tensor_batch[metadata_key][row_index]
@@ -893,10 +894,12 @@ class RayPPOTrainer:
         )
         initial_output.non_tensor_batch["sir_branch_index"] = np.full(len(initial_output), -1, dtype=np.int32)
         initial_output.non_tensor_batch["sir_cut_position"] = np.full(len(initial_output), -1, dtype=np.int32)
+        initial_output.non_tensor_batch["sir_cut_with_replacement"] = np.zeros(len(initial_output), dtype=bool)
         branch_output.non_tensor_batch["sir_pool_origin"] = np.full(len(branch_output), "branch", dtype=object)
         branch_output.non_tensor_batch["sir_parent_index"] = prefix_plan.parent_local_indices.astype(np.int32)
         branch_output.non_tensor_batch["sir_branch_index"] = prefix_plan.branch_local_indices.astype(np.int32)
         branch_output.non_tensor_batch["sir_cut_position"] = prefix_plan.cut_positions.astype(np.int32)
+        branch_output.non_tensor_batch["sir_cut_with_replacement"] = prefix_plan.cut_with_replacement.copy()
 
         initial_timing = initial_output.meta_info.pop("timing", {})
         branch_timing = branch_output.meta_info.pop("timing", {})
@@ -925,12 +928,14 @@ class RayPPOTrainer:
             "sir/cut_position_mean": float(prefix_plan.cut_positions.mean()),
             "sir/cut_position_min": float(prefix_plan.cut_positions.min()),
             "sir/cut_position_max": float(prefix_plan.cut_positions.max()),
+            "sir/cut_with_replacement_fraction": float(prefix_plan.cut_with_replacement.mean()),
             "timing_s/sir/branch_rollout_wall": float(branch_elapsed),
         }
         print(
             "[SIR] branched rollout pool done "
             f"step={self.global_steps} prompts={len(gen_batch)} initial_per_prompt={initial_count} "
             f"branches_per_initial={prefix_plan.branches_per_initial} pool_per_prompt={pool_size} "
+            f"repeated_cut_frac={float(prefix_plan.cut_with_replacement.mean()):.4f} "
             f"branch_elapsed_s={branch_elapsed:.2f}",
             flush=True,
         )
@@ -1104,6 +1109,7 @@ class RayPPOTrainer:
                 "sir_parent_index",
                 "sir_branch_index",
                 "sir_cut_position",
+                "sir_cut_with_replacement",
             ):
                 if key in batch.non_tensor_batch:
                     reward_extra_infos_to_dump.setdefault(key, batch.non_tensor_batch[key].tolist())

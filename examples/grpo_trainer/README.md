@@ -53,9 +53,10 @@ The three sizes are deliberately separate:
 `SIR_POOL_MODE=independent` preserves the original behavior and generates all
 `N` responses independently. `SIR_POOL_MODE=branched_prefix` first generates
 `K` complete responses per prompt. For each initial response it chooses
-`N/K-1` distinct random, nonterminal cut positions in its first `B` tokens and
-completes each retained prefix once. This produces exactly `N` complete
-responses before the same SIR selection step. Branched mode therefore requires
+`N/K-1` random, nonterminal cut positions in its first `B` tokens and completes
+each retained prefix once. Cuts are distinct when possible; a short response
+reuses its available cuts so the pool still contains exactly `N` completions.
+A one-token response falls back to the empty prefix. Branched mode requires
 `N > K` and `N` divisible by `K`.
 
 For candidate `i`, the launcher uses the rollout policy's chosen-token

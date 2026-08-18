@@ -744,7 +744,7 @@ class RayPPOTrainer:
                     "selected_count": plan.selected_count,
                     "block_length": plan.block_length,
                     "alpha": plan.alpha,
-                    "resampling": "categorical_with_replacement",
+                    "resampling": "weighted_without_replacement",
                     "sir_seed": group.seed,
                     "sir_ess": group.effective_sample_size,
                     "selected_pool_indices": group.selected_local_indices.tolist(),
@@ -3711,7 +3711,7 @@ class RayPPOTrainer:
             print(
                 "[SIR] enabled "
                 f"N={rollout_pool_size} K={sir_selected_count} B={sir_block_length} alpha={sir_alpha} "
-                "resampling=categorical_with_replacement",
+                "resampling=weighted_without_replacement",
                 flush=True,
             )
         physical_total_epochs = int(self.config.trainer.total_epochs)

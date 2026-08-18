@@ -58,10 +58,10 @@ L_i = sum_{t=1}^{min(B,T_i)} log p(y_t | x,y_<t)
 w_i = softmax((alpha - 1) L_i)
 ```
 
-and draws `K` categorical samples with replacement. If EOS occurs before `B`,
-its probability is included in `L_i`; no length normalization or virtual
-post-EOS probability is added. SIR is disabled by default, so the canonical
-baseline is unchanged.
+and draws `K` distinct trajectories by weighted sampling without replacement.
+If EOS occurs before `B`, its probability is included in `L_i`; no length
+normalization or virtual post-EOS probability is added. SIR is disabled by
+default, so the canonical baseline is unchanged.
 
 Example:
 

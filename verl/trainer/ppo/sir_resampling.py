@@ -140,9 +140,9 @@ def build_sir_selection_plan(
 ) -> SIRSelectionPlan:
     """Draw ``selected_count`` rows per contiguous ``pool_size`` prompt group.
 
-    Sampling is categorical with replacement, which is the standard SIR
-    resampling step. The returned indices preserve prompt-group order and draw
-    order, so duplicate source trajectories remain explicit GRPO rows.
+    Sampling is weighted without replacement. The returned indices preserve
+    prompt-group order and selection order, and every selected GRPO group
+    therefore contains distinct source trajectories.
     """
     log_probs = np.asarray(rollout_log_probs)
     mask = np.asarray(response_mask)
@@ -179,16 +179,13 @@ def build_sir_selection_plan(
         group_joint_log_probs = joint_log_probs[start:stop]
         weights = tempered_sir_weights(group_joint_log_probs, alpha)
         group_seed = stable_seed(seed, global_step, group_index)
-        selected_local = (
-            np.random.default_rng(group_seed)
-            .choice(
-                pool_size,
-                size=selected_count,
-                replace=True,
-                p=weights,
-            )
-            .astype(np.int64)
-        )
+        # Gumbel-top-k samples an ordered, weighted subset without replacement.
+        # Use the unnormalized log weights instead of ``log(weights)`` so that
+        # candidates remain selectable even when normalized weights underflow
+        # to exactly zero for highly concentrated groups.
+        selection_logits = (float(alpha) - 1.0) * group_joint_log_probs
+        gumbels = np.random.default_rng(group_seed).gumbel(size=pool_size)
+        selected_local = np.argsort(selection_logits + gumbels)[::-1][:selected_count].astype(np.int64)
         selected_counts = np.bincount(selected_local, minlength=pool_size).astype(np.int64)
         draws_by_candidate: list[list[int]] = [[] for _ in range(pool_size)]
         for draw_index, local_index in enumerate(selected_local.tolist()):

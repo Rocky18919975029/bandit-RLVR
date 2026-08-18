@@ -68,7 +68,7 @@ def test_selection_uses_valid_prefix_and_keeps_early_terminal_probability():
     assert group.weights[1] > group.weights[0] > group.weights[2]
 
 
-def test_selection_is_reproducible_grouped_and_marks_duplicate_draws():
+def test_selection_is_reproducible_grouped_and_has_no_duplicate_draws():
     log_probs = np.asarray(
         [
             [-9.0, 0.0],
@@ -91,11 +91,35 @@ def test_selection_is_reproducible_grouped_and_marks_duplicate_draws():
     second = build_sir_selection_plan(log_probs, response_mask, **kwargs)
 
     np.testing.assert_array_equal(first.selected_global_indices, second.selected_global_indices)
-    np.testing.assert_array_equal(first.selected_global_indices, [1, 1, 3, 3])
-    np.testing.assert_array_equal(first.selected_pool_indices, [1, 1, 1, 1])
+    np.testing.assert_array_equal(first.selected_global_indices, [1, 0, 3, 2])
+    np.testing.assert_array_equal(first.selected_pool_indices, [1, 0, 1, 0])
     np.testing.assert_array_equal(first.selected_draw_indices, [0, 1, 0, 1])
-    assert first.groups[0].selected_draws == ((), (0, 1))
-    assert first.groups[0].selected_counts.tolist() == [0, 2]
+    assert first.groups[0].selected_draws == ((1,), (0,))
+    assert first.groups[0].selected_counts.tolist() == [1, 1]
+    for group in first.groups:
+        assert len(set(group.selected_local_indices.tolist())) == 2
+        assert group.selected_counts.max() == 1
+
+
+def test_selection_without_replacement_survives_normalized_weight_underflow():
+    log_probs = np.asarray([[-1.0], [-1000.0], [-2000.0], [-3000.0]])
+    response_mask = np.ones_like(log_probs)
+
+    plan = build_sir_selection_plan(
+        log_probs,
+        response_mask,
+        pool_size=4,
+        selected_count=3,
+        block_length=1,
+        alpha=2.0,
+        seed=42,
+        global_step=1,
+    )
+
+    group = plan.groups[0]
+    assert np.count_nonzero(group.weights) == 1
+    assert len(set(group.selected_local_indices.tolist())) == 3
+    assert group.selected_counts.max() == 1
 
 
 def test_selection_rejects_invalid_group_sizes():

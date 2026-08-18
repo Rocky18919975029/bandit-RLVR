@@ -116,7 +116,7 @@ algorithm:
     # Keep False to preserve the canonical GRPO baseline exactly.
     enable: False
 
-    # Number K of trajectories resampled with replacement per prompt.
+    # Number K of distinct trajectories sampled without replacement per prompt.
     selected_count: 8
 
     # Number B of sampled tokens used in the joint log-probability.

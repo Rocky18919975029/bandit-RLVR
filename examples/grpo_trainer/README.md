@@ -50,6 +50,14 @@ The three sizes are deliberately separate:
 - `SIR_K` / `algorithm.sir.selected_count`: resampled GRPO group size `K`.
 - `SIR_BLOCK_LENGTH` / `algorithm.sir.block_length`: prefix action horizon `B`.
 
+`SIR_POOL_MODE=independent` preserves the original behavior and generates all
+`N` responses independently. `SIR_POOL_MODE=branched_prefix` first generates
+`K` complete responses per prompt. For each initial response it chooses
+`N/K-1` distinct random, nonterminal cut positions in its first `B` tokens and
+completes each retained prefix once. This produces exactly `N` complete
+responses before the same SIR selection step. Branched mode therefore requires
+`N > K` and `N` divisible by `K`.
+
 For candidate `i`, the launcher uses the rollout policy's chosen-token
 log-probabilities to compute
 
@@ -67,6 +75,7 @@ Example:
 
 ```bash
 SIR_ENABLE=True \
+SIR_POOL_MODE=branched_prefix \
 ROLLOUT_N=32 \
 SIR_K=8 \
 SIR_BLOCK_LENGTH=64 \

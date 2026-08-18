@@ -15,7 +15,11 @@
 import numpy as np
 import pytest
 
-from verl.trainer.ppo.sir_resampling import build_sir_selection_plan, tempered_sir_weights
+from verl.trainer.ppo.sir_resampling import (
+    build_branched_prefix_plan,
+    build_sir_selection_plan,
+    tempered_sir_weights,
+)
 
 
 def test_tempered_weights_use_proposal_correction():
@@ -135,5 +139,41 @@ def test_selection_rejects_invalid_group_sizes():
             block_length=1,
             alpha=1.5,
             seed=1,
+            global_step=1,
+        )
+
+
+def test_branched_prefix_plan_expands_k_initial_trajectories_to_n():
+    kwargs = dict(
+        pool_size=8,
+        initial_count=2,
+        block_length=6,
+        seed=42,
+        global_step=3,
+    )
+
+    first = build_branched_prefix_plan(np.asarray([10, 8, 9, 7]), **kwargs)
+    second = build_branched_prefix_plan(np.asarray([10, 8, 9, 7]), **kwargs)
+
+    assert first.branches_per_initial == 3
+    assert len(first.cut_positions) == 12
+    np.testing.assert_array_equal(first.cut_positions, second.cut_positions)
+    np.testing.assert_array_equal(first.parent_global_indices, np.repeat(np.arange(4), 3))
+    np.testing.assert_array_equal(first.parent_local_indices, np.tile(np.repeat(np.arange(2), 3), 2))
+    np.testing.assert_array_equal(first.branch_local_indices, np.tile(np.arange(3), 4))
+    for parent_index in range(4):
+        parent_cuts = first.cut_positions[first.parent_global_indices == parent_index]
+        assert len(set(parent_cuts.tolist())) == 3
+        assert np.all((1 <= parent_cuts) & (parent_cuts <= 6))
+
+
+def test_branched_prefix_plan_rejects_short_initial_trajectory():
+    with pytest.raises(ValueError, match="distinct nonterminal prefix cuts"):
+        build_branched_prefix_plan(
+            np.asarray([3, 10]),
+            pool_size=8,
+            initial_count=2,
+            block_length=6,
+            seed=42,
             global_step=1,
         )

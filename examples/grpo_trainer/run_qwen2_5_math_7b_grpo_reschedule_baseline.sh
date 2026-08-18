@@ -44,6 +44,7 @@ ACTOR_DATA_LOADER_SEED=${ACTOR_DATA_LOADER_SEED:-42}
 ROLLOUT_LOGPROB_REUSE=${ROLLOUT_LOGPROB_REUSE:-True}
 REWARD_STRICT_BOX_VERIFY=${REWARD_STRICT_BOX_VERIFY:-True}
 SIR_ENABLE=${SIR_ENABLE:-False}
+SIR_POOL_MODE=${SIR_POOL_MODE:-independent}
 SIR_K=${SIR_K:-8}
 SIR_BLOCK_LENGTH=${SIR_BLOCK_LENGTH:-64}
 SIR_ALPHA=${SIR_ALPHA:-1.5}
@@ -78,6 +79,12 @@ fi
 if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
     && (( SIR_K < 2 || SIR_K > ROLLOUT_N )); then
     echo "SIR requires 2 <= SIR_K <= ROLLOUT_N; got K=${SIR_K}, N=${ROLLOUT_N}" >&2
+    exit 1
+fi
+if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
+    && [ "${SIR_POOL_MODE}" = "branched_prefix" ] \
+    && (( ROLLOUT_N <= SIR_K || ROLLOUT_N % SIR_K != 0 )); then
+    echo "branched-prefix SIR requires N > K and N divisible by K; got N=${ROLLOUT_N}, K=${SIR_K}" >&2
     exit 1
 fi
 
@@ -143,6 +150,7 @@ ROLLOUT_CORRECTION=(
 
 SIR=(
     algorithm.sir.enable=${SIR_ENABLE}
+    algorithm.sir.pool_mode=${SIR_POOL_MODE}
     algorithm.sir.selected_count=${SIR_K}
     algorithm.sir.block_length=${SIR_BLOCK_LENGTH}
     algorithm.sir.alpha=${SIR_ALPHA}

@@ -61,7 +61,11 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import extract_reward
-from verl.trainer.ppo.sir_resampling import SIRSelectionPlan, build_sir_selection_plan
+from verl.trainer.ppo.sir_resampling import (
+    SIRSelectionPlan,
+    build_branched_prefix_plan,
+    build_sir_selection_plan,
+)
 from verl.trainer.ppo.utils import (
     Role,
     WorkerType,
@@ -724,6 +728,15 @@ class RayPPOTrainer:
                     "selected_count": int(group.selected_counts[local_index]),
                     "selected_draws": list(group.selected_draws[local_index]),
                 }
+                for metadata_key in (
+                    "sir_pool_origin",
+                    "sir_parent_index",
+                    "sir_branch_index",
+                    "sir_cut_position",
+                ):
+                    if metadata_key in pool_batch.non_tensor_batch:
+                        value = pool_batch.non_tensor_batch[metadata_key][row_index]
+                        candidate[metadata_key] = value.item() if hasattr(value, "item") else value
                 if dump_token_log_probs:
                     candidate["sampled_token_log_probs"] = sampled_log_probs
                 for reward_key in ("acc", "pred", "overlong_reward", "overlong"):
@@ -741,6 +754,7 @@ class RayPPOTrainer:
                     "prompt": decoded_prompts[group.group_index],
                     "ground_truth": ground_truth,
                     "pool_size": plan.pool_size,
+                    "pool_mode": str(self.config.algorithm.sir.get("pool_mode", "independent")),
                     "selected_count": plan.selected_count,
                     "block_length": plan.block_length,
                     "alpha": plan.alpha,
@@ -761,6 +775,166 @@ class RayPPOTrainer:
             else:
                 still_pending.append(pending)
         self._dump_futures = still_pending
+
+    def _generate_sir_branched_pool(
+        self,
+        gen_batch: DataProto,
+        initial_output: DataProto,
+        *,
+        pool_size: int,
+        initial_count: int,
+        block_length: int,
+        seed: int,
+    ) -> tuple[DataProto, dict[str, float]]:
+        """Expand K full initial rollouts into an N-way pool from random prefixes."""
+        expected_initial = len(gen_batch) * initial_count
+        if len(initial_output) != expected_initial:
+            raise ValueError(
+                "branched SIR initial rollout cardinality mismatch: "
+                f"expected {expected_initial}, got {len(initial_output)}"
+            )
+        for required_key in ("responses", "response_mask", "rollout_log_probs"):
+            if required_key not in initial_output.batch:
+                raise ValueError(f"branched SIR initial rollout is missing {required_key}")
+
+        response_lengths = (
+            initial_output.batch["response_mask"].detach().cpu().bool().sum(dim=-1).numpy().astype(np.int64)
+        )
+        prefix_plan = build_branched_prefix_plan(
+            response_lengths,
+            pool_size=pool_size,
+            initial_count=initial_count,
+            block_length=block_length,
+            seed=seed,
+            global_step=self.global_steps,
+        )
+        initial_token_ids = self._extract_response_token_ids(initial_output)
+        initial_prompt_batch = gen_batch.repeat(repeat_times=initial_count, interleave=True)
+        branch_source = initial_prompt_batch.select_idxs(prefix_plan.parent_global_indices)
+        branch_prefix_ids = [
+            initial_token_ids[parent_index][:cut_position]
+            for parent_index, cut_position in zip(
+                prefix_plan.parent_global_indices.tolist(),
+                prefix_plan.cut_positions.tolist(),
+                strict=True,
+            )
+        ]
+        branch_source.non_tensor_batch["hpf_prefix_ids"] = self._object_array(branch_prefix_ids)
+        max_response_length = int(self.config.data.max_response_length)
+        branch_source.non_tensor_batch["__max_tokens__"] = (
+            max_response_length - prefix_plan.cut_positions
+        ).astype(np.int32)
+        branch_source.meta_info["temperature"] = float(self.config.actor_rollout_ref.rollout.temperature)
+        branch_source.meta_info["top_p"] = float(self.config.actor_rollout_ref.rollout.top_p)
+        branch_source.meta_info["logprobs"] = True
+
+        rollout_worker_divisor = int(self.config.actor_rollout_ref.rollout.agent.num_workers)
+        branch_source_padded, branch_pad_size = pad_dataproto_to_divisor(
+            branch_source, rollout_worker_divisor
+        )
+        branch_start = time.perf_counter()
+        print(
+            "[SIR] branched suffix rollout start "
+            f"step={self.global_steps} initial={len(initial_output)} branches={len(branch_source)} "
+            f"cuts_per_initial={prefix_plan.branches_per_initial} pad={branch_pad_size}",
+            flush=True,
+        )
+        branch_output = self.async_rollout_manager.generate_sequences(branch_source_padded)
+        branch_output = unpad_dataproto(branch_output, branch_pad_size)
+        branch_elapsed = time.perf_counter() - branch_start
+        if len(branch_output) != len(prefix_plan.cut_positions):
+            raise ValueError(
+                "branched SIR suffix rollout cardinality mismatch: "
+                f"expected {len(prefix_plan.cut_positions)}, got {len(branch_output)}"
+            )
+        if "rollout_log_probs" not in branch_output.batch:
+            raise ValueError("branched SIR suffix rollout did not return rollout_log_probs")
+
+        branch_responses = branch_output.batch["responses"]
+        branch_log_probs = branch_output.batch["rollout_log_probs"]
+        initial_responses = initial_output.batch["responses"]
+        initial_log_probs = initial_output.batch["rollout_log_probs"]
+        for branch_row, (parent_row, cut_position) in enumerate(
+            zip(
+                prefix_plan.parent_global_indices.tolist(),
+                prefix_plan.cut_positions.tolist(),
+                strict=True,
+            )
+        ):
+            if not torch.equal(
+                branch_responses[branch_row, :cut_position],
+                initial_responses[parent_row, :cut_position],
+            ):
+                raise ValueError(
+                    "branched SIR suffix response does not preserve its requested prefix: "
+                    f"branch={branch_row}, parent={parent_row}, cut={cut_position}"
+                )
+            branch_log_probs[branch_row, :cut_position] = initial_log_probs[parent_row, :cut_position]
+
+        internal_sampling_keys = [
+            key
+            for key in (
+                "hpf_prefix_ids",
+                "__temperature__",
+                "__top_p__",
+                "__top_k__",
+                "__max_tokens__",
+                "__max_new_tokens__",
+                "__logprobs__",
+            )
+            if key in branch_output.non_tensor_batch
+        ]
+        if internal_sampling_keys:
+            branch_output.pop(non_tensor_batch_keys=internal_sampling_keys)
+
+        initial_output.non_tensor_batch["sir_pool_origin"] = np.full(len(initial_output), "initial", dtype=object)
+        initial_output.non_tensor_batch["sir_parent_index"] = np.tile(
+            np.arange(initial_count, dtype=np.int32), len(gen_batch)
+        )
+        initial_output.non_tensor_batch["sir_branch_index"] = np.full(len(initial_output), -1, dtype=np.int32)
+        initial_output.non_tensor_batch["sir_cut_position"] = np.full(len(initial_output), -1, dtype=np.int32)
+        branch_output.non_tensor_batch["sir_pool_origin"] = np.full(len(branch_output), "branch", dtype=object)
+        branch_output.non_tensor_batch["sir_parent_index"] = prefix_plan.parent_local_indices.astype(np.int32)
+        branch_output.non_tensor_batch["sir_branch_index"] = prefix_plan.branch_local_indices.astype(np.int32)
+        branch_output.non_tensor_batch["sir_cut_position"] = prefix_plan.cut_positions.astype(np.int32)
+
+        initial_timing = initial_output.meta_info.pop("timing", {})
+        branch_timing = branch_output.meta_info.pop("timing", {})
+        combined = DataProto.concat([initial_output, branch_output])
+        branch_offset = len(initial_output)
+        branches_per_prompt = initial_count * prefix_plan.branches_per_initial
+        pool_order: list[int] = []
+        for prompt_index in range(len(gen_batch)):
+            initial_start = prompt_index * initial_count
+            branch_start_index = branch_offset + prompt_index * branches_per_prompt
+            pool_order.extend(range(initial_start, initial_start + initial_count))
+            pool_order.extend(range(branch_start_index, branch_start_index + branches_per_prompt))
+        pool_output = combined.select_idxs(np.asarray(pool_order, dtype=np.int64))
+        if len(pool_output) != len(gen_batch) * pool_size:
+            raise ValueError(
+                f"branched SIR constructed {len(pool_output)} rows, expected {len(gen_batch) * pool_size}"
+            )
+        timing = {f"sir_branched/initial/{key}": value for key, value in initial_timing.items()}
+        timing.update({f"sir_branched/branch/{key}": value for key, value in branch_timing.items()})
+        pool_output.meta_info["timing"] = timing
+        metrics = {
+            "sir/branched_pool_enabled": 1.0,
+            "sir/initial_rollouts": float(len(initial_output)),
+            "sir/branch_rollouts": float(len(branch_output)),
+            "sir/branches_per_initial": float(prefix_plan.branches_per_initial),
+            "sir/cut_position_mean": float(prefix_plan.cut_positions.mean()),
+            "sir/cut_position_min": float(prefix_plan.cut_positions.min()),
+            "sir/cut_position_max": float(prefix_plan.cut_positions.max()),
+            "timing_s/sir/branch_rollout_wall": float(branch_elapsed),
+        }
+        print(
+            "[SIR] branched rollout pool done "
+            f"step={self.global_steps} prompts={len(gen_batch)} initial_per_prompt={initial_count} "
+            f"branches_per_initial={prefix_plan.branches_per_initial} pool_per_prompt={pool_size} "
+            f"branch_elapsed_s={branch_elapsed:.2f}",
+            flush=True,
+        )
+        return pool_output, metrics
 
     def _apply_sir_resampling(
         self,
@@ -926,6 +1100,10 @@ class RayPPOTrainer:
                 "sir_group_index",
                 "sir_prefix_joint_log_prob",
                 "sir_weight",
+                "sir_pool_origin",
+                "sir_parent_index",
+                "sir_branch_index",
+                "sir_cut_position",
             ):
                 if key in batch.non_tensor_batch:
                     reward_extra_infos_to_dump.setdefault(key, batch.non_tensor_batch[key].tolist())
@@ -3675,6 +3853,8 @@ class RayPPOTrainer:
         )
         sir_config = self.config.algorithm.get("sir", {})
         sir_enabled = self._parse_hpf_bool(sir_config.get("enable", False), False)
+        sir_pool_mode = str(sir_config.get("pool_mode", "independent")).strip().lower()
+        sir_branched_pool = False
         if sir_enabled:
             rollout_pool_size = int(self.config.actor_rollout_ref.rollout.n)
             sir_selected_count = int(sir_config.get("selected_count"))
@@ -3696,6 +3876,20 @@ class RayPPOTrainer:
                 )
             if not np.isfinite(sir_alpha) or sir_alpha <= 0:
                 raise ValueError(f"algorithm.sir.alpha must be finite and positive, got {sir_alpha}")
+            if sir_pool_mode not in {"independent", "branched_prefix"}:
+                raise ValueError(
+                    "algorithm.sir.pool_mode must be 'independent' or 'branched_prefix'; "
+                    f"got {sir_pool_mode!r}"
+                )
+            sir_branched_pool = sir_pool_mode == "branched_prefix"
+            if sir_branched_pool and (
+                rollout_pool_size <= sir_selected_count
+                or rollout_pool_size % sir_selected_count != 0
+            ):
+                raise ValueError(
+                    "branched-prefix SIR requires N > K and N divisible by K; "
+                    f"got N={rollout_pool_size}, K={sir_selected_count}"
+                )
             if not self._parse_hpf_bool(
                 self.config.actor_rollout_ref.rollout.get("calculate_log_probs", False), False
             ):
@@ -3710,7 +3904,8 @@ class RayPPOTrainer:
                 raise ValueError("algorithm.sir is a GRPO-baseline mode and cannot be combined with HPF rollout paths")
             print(
                 "[SIR] enabled "
-                f"N={rollout_pool_size} K={sir_selected_count} B={sir_block_length} alpha={sir_alpha} "
+                f"pool_mode={sir_pool_mode} N={rollout_pool_size} K={sir_selected_count} "
+                f"B={sir_block_length} alpha={sir_alpha} "
                 "resampling=weighted_without_replacement",
                 flush=True,
             )
@@ -3823,7 +4018,12 @@ class RayPPOTrainer:
                         else fresh_num_suffixes_value
                     )
                     effective_rollout_n = fresh_num_prefixes * fresh_num_suffixes
-                gen_batch_output = gen_batch.repeat(repeat_times=rollout_n, interleave=True)
+                initial_generation_count = (
+                    int(sir_config.get("selected_count")) if sir_branched_pool else rollout_n
+                )
+                gen_batch_output = gen_batch.repeat(
+                    repeat_times=initial_generation_count, interleave=True
+                )
 
                 if use_hpf_tree_rollout:
                     combined_gen_batch = None
@@ -3871,7 +4071,30 @@ class RayPPOTrainer:
                             timing_raw.update(gen_batch_output.meta_info["timing"])
                             gen_batch_output.meta_info.pop("timing", None)
                         else:
+                            if sir_branched_pool:
+                                print(
+                                    "[SIR] initial rollout start "
+                                    f"step={self.global_steps} prompts={len(gen_batch)} "
+                                    f"initial_per_prompt={initial_generation_count}",
+                                    flush=True,
+                                )
                             combined_gen_output = self.async_rollout_manager.generate_sequences(combined_gen_batch)
+                            if sir_branched_pool:
+                                print(
+                                    "[SIR] initial rollout done "
+                                    f"step={self.global_steps} outputs={len(combined_gen_output)}",
+                                    flush=True,
+                                )
+                                combined_gen_output, branched_metrics = self._generate_sir_branched_pool(
+                                    gen_batch,
+                                    combined_gen_output,
+                                    pool_size=rollout_n,
+                                    initial_count=initial_generation_count,
+                                    block_length=int(sir_config.get("block_length")),
+                                    seed=int(sir_config.get("seed", 42)),
+                                )
+                                metrics.update(branched_metrics)
+                                num_sampled_prompts = len(combined_gen_output)
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
                             self.llm_server_manager.stop_profile()

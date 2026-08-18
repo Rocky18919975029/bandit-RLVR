@@ -84,10 +84,90 @@ class SIRSelectionPlan:
         }
 
 
+@dataclass(frozen=True)
+class BranchedPrefixPlan:
+    """Random prefix cuts used to expand K initial trajectories into an N-way pool."""
+
+    pool_size: int
+    initial_count: int
+    branches_per_initial: int
+    parent_global_indices: np.ndarray
+    parent_local_indices: np.ndarray
+    branch_local_indices: np.ndarray
+    cut_positions: np.ndarray
+
+
 def stable_seed(*parts: object) -> int:
     """Derive a reproducible uint32 seed without Python's salted hash."""
     payload = "\x1f".join(str(part) for part in parts).encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:4], byteorder="big", signed=False)
+
+
+def build_branched_prefix_plan(
+    response_lengths: np.ndarray,
+    *,
+    pool_size: int,
+    initial_count: int,
+    block_length: int,
+    seed: int,
+    global_step: int,
+) -> BranchedPrefixPlan:
+    """Choose distinct nonterminal prefix cuts for every initial trajectory.
+
+    ``response_lengths`` must contain K initial trajectories contiguously for
+    each prompt. A cut position ``c`` retains tokens ``[:c]``. The terminal
+    boundary is excluded so a branch always generates at least one fresh token.
+    """
+    lengths = np.asarray(response_lengths, dtype=np.int64)
+    if lengths.ndim != 1 or lengths.size == 0:
+        raise ValueError("response_lengths must be a non-empty one-dimensional array")
+    if pool_size <= initial_count or pool_size % initial_count != 0:
+        raise ValueError(
+            "branched SIR requires pool_size to be an integer multiple of initial_count and larger than it; "
+            f"got N={pool_size}, K={initial_count}"
+        )
+    if initial_count < 2:
+        raise ValueError(f"initial_count must be at least 2, got {initial_count}")
+    if block_length <= 0:
+        raise ValueError(f"block_length must be positive, got {block_length}")
+    if lengths.size % initial_count != 0:
+        raise ValueError(f"initial response count {lengths.size} is not divisible by initial_count={initial_count}")
+
+    branches_per_initial = pool_size // initial_count - 1
+    parent_global_indices: list[int] = []
+    parent_local_indices: list[int] = []
+    branch_local_indices: list[int] = []
+    cut_positions: list[int] = []
+    for parent_global_index, response_length in enumerate(lengths.tolist()):
+        prompt_index, parent_local_index = divmod(parent_global_index, initial_count)
+        max_cut = min(block_length, response_length - 1)
+        if max_cut < branches_per_initial:
+            raise ValueError(
+                "branched SIR cannot choose distinct nonterminal prefix cuts: "
+                f"prompt={prompt_index}, parent={parent_local_index}, response_length={response_length}, "
+                f"eligible_cuts={max(max_cut, 0)}, required={branches_per_initial}"
+            )
+        parent_seed = stable_seed(seed, global_step, prompt_index, parent_local_index, "prefix-cuts")
+        parent_cuts = np.random.default_rng(parent_seed).choice(
+            np.arange(1, max_cut + 1, dtype=np.int64),
+            size=branches_per_initial,
+            replace=False,
+        )
+        for branch_local_index, cut_position in enumerate(parent_cuts.tolist()):
+            parent_global_indices.append(parent_global_index)
+            parent_local_indices.append(parent_local_index)
+            branch_local_indices.append(branch_local_index)
+            cut_positions.append(cut_position)
+
+    return BranchedPrefixPlan(
+        pool_size=pool_size,
+        initial_count=initial_count,
+        branches_per_initial=branches_per_initial,
+        parent_global_indices=np.asarray(parent_global_indices, dtype=np.int64),
+        parent_local_indices=np.asarray(parent_local_indices, dtype=np.int64),
+        branch_local_indices=np.asarray(branch_local_indices, dtype=np.int64),
+        cut_positions=np.asarray(cut_positions, dtype=np.int64),
+    )
 
 
 def tempered_sir_weights(prefix_joint_log_probs: np.ndarray, alpha: float) -> np.ndarray:

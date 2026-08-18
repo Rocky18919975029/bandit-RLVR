@@ -116,6 +116,11 @@ algorithm:
     # Keep False to preserve the canonical GRPO baseline exactly.
     enable: False
 
+    # Pool construction: "independent" generates N complete responses;
+    # "branched_prefix" generates K initial responses and expands each one
+    # from N/K-1 random prefix cuts before selecting K trajectories.
+    pool_mode: independent
+
     # Number K of distinct trajectories sampled without replacement per prompt.
     selected_count: 8
 

@@ -37,6 +37,52 @@ actor_rollout_ref.actor.use_kl_loss=False
 algorithm.norm_adv_by_std_in_grpo=False
 ```
 
+## Optional joint-tempered SIR before GRPO
+
+The Qwen2.5-Math Re-Schedule baseline launcher can optionally generate a pool
+of `N` complete responses per prompt, resample `K` trajectories according to a
+joint-tempered prefix action, and pass only those `K` rows into the ordinary
+reward, GRPO advantage, and actor-update path.
+
+The three sizes are deliberately separate:
+
+- `ROLLOUT_N` / `actor_rollout_ref.rollout.n`: generated pool size `N`.
+- `SIR_K` / `algorithm.sir.selected_count`: resampled GRPO group size `K`.
+- `SIR_BLOCK_LENGTH` / `algorithm.sir.block_length`: prefix action horizon `B`.
+
+For candidate `i`, the launcher uses the rollout policy's chosen-token
+log-probabilities to compute
+
+```text
+L_i = sum_{t=1}^{min(B,T_i)} log p(y_t | x,y_<t)
+w_i = softmax((alpha - 1) L_i)
+```
+
+and draws `K` categorical samples with replacement. If EOS occurs before `B`,
+its probability is included in `L_i`; no length normalization or virtual
+post-EOS probability is added. SIR is disabled by default, so the canonical
+baseline is unchanged.
+
+Example:
+
+```bash
+SIR_ENABLE=True \
+ROLLOUT_N=32 \
+SIR_K=8 \
+SIR_BLOCK_LENGTH=64 \
+SIR_ALPHA=1.5 \
+bash examples/grpo_trainer/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh
+```
+
+When enabled, the complete pool for step `s` is written to
+`trainer.rollout_data_dir/sir_pool/s.jsonl`, one JSON object per prompt. Every
+candidate contains its response, sampled token IDs, optional chosen-token
+log-probabilities, available verifier score, prefix joint log-probability, normalized SIR weight,
+`selected_count`, and `selected_draws`. The ordinary rollout dump continues to
+contain only the `K` rows used for training and includes their source pool and
+draw indices. Set `SIR_DUMP_TOKEN_LOG_PROBS=False` only when storage is more
+important than post-hoc reweighting at different block lengths.
+
 ## Canonical scripts
 
 All scripts in this directory follow the naming convention:

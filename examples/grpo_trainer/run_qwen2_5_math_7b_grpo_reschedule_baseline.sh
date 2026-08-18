@@ -43,6 +43,14 @@ DATA_SEED=${DATA_SEED:-42}
 ACTOR_DATA_LOADER_SEED=${ACTOR_DATA_LOADER_SEED:-42}
 ROLLOUT_LOGPROB_REUSE=${ROLLOUT_LOGPROB_REUSE:-True}
 REWARD_STRICT_BOX_VERIFY=${REWARD_STRICT_BOX_VERIFY:-True}
+SIR_ENABLE=${SIR_ENABLE:-False}
+SIR_K=${SIR_K:-8}
+SIR_BLOCK_LENGTH=${SIR_BLOCK_LENGTH:-64}
+SIR_ALPHA=${SIR_ALPHA:-1.5}
+SIR_SEED=${SIR_SEED:-42}
+SIR_DUMP_POOL=${SIR_DUMP_POOL:-True}
+SIR_DUMP_TOKEN_LOG_PROBS=${SIR_DUMP_TOKEN_LOG_PROBS:-True}
+SIR_DUMP_DIR=${SIR_DUMP_DIR:-}
 
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
@@ -65,6 +73,11 @@ SAVE_CONTENTS=${SAVE_CONTENTS:-"['model','optimizer','extra','hf_model']"}
 
 if (( ROLLOUT_N < 2 )); then
     echo "GRPO requires ROLLOUT_N >= 2; got ${ROLLOUT_N}" >&2
+    exit 1
+fi
+if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
+    && (( SIR_K < 2 || SIR_K > ROLLOUT_N )); then
+    echo "SIR requires 2 <= SIR_K <= ROLLOUT_N; got K=${SIR_K}, N=${ROLLOUT_N}" >&2
     exit 1
 fi
 
@@ -127,6 +140,19 @@ ROLLOUT_CORRECTION=(
     algorithm.rollout_correction.bypass_mode=${ROLLOUT_LOGPROB_REUSE}
     algorithm.rollout_correction.loss_type=ppo_clip
 )
+
+SIR=(
+    algorithm.sir.enable=${SIR_ENABLE}
+    algorithm.sir.selected_count=${SIR_K}
+    algorithm.sir.block_length=${SIR_BLOCK_LENGTH}
+    algorithm.sir.alpha=${SIR_ALPHA}
+    algorithm.sir.seed=${SIR_SEED}
+    algorithm.sir.dump_pool=${SIR_DUMP_POOL}
+    algorithm.sir.dump_token_log_probs=${SIR_DUMP_TOKEN_LOG_PROBS}
+)
+if [ -n "${SIR_DUMP_DIR}" ]; then
+    SIR+=(algorithm.sir.dump_dir="${SIR_DUMP_DIR}")
+fi
 
 REF=(
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}
@@ -192,6 +218,7 @@ python3 -m verl.trainer.main_ppo \
     "${ACTOR[@]}" \
     "${ROLLOUT[@]}" \
     "${ROLLOUT_CORRECTION[@]}" \
+    "${SIR[@]}" \
     "${REF[@]}" \
     "${REWARD[@]}" \
     "${RAY[@]}" \

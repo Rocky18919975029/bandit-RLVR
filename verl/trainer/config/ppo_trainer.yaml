@@ -109,6 +109,34 @@ algorithm:
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
 
+  # Optional SIR filter between rollout generation and ordinary GRPO.
+  # actor_rollout_ref.rollout.n is the generated pool size N.
+  sir:
+
+    # Keep False to preserve the canonical GRPO baseline exactly.
+    enable: False
+
+    # Number K of trajectories resampled with replacement per prompt.
+    selected_count: 8
+
+    # Number B of sampled tokens used in the joint log-probability.
+    block_length: 64
+
+    # Target power q(a) proportional to p(a)^alpha.
+    alpha: 1.5
+
+    # Base seed combined deterministically with global step and prompt index.
+    seed: 42
+
+    # Save all N rollout candidates and their selection annotations.
+    dump_pool: True
+
+    # Optional directory. Null writes under trainer.rollout_data_dir/sir_pool.
+    dump_dir: null
+
+    # Retain all valid chosen-token log-probabilities for post-hoc analysis.
+    dump_token_log_probs: True
+
   # Progressive HAPPO-style prefix-follower RLVR settings.
   hpf_rlvr:
 

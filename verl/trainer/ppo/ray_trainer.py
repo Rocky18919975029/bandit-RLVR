@@ -43,6 +43,7 @@ from verl.trainer.config import AlgoConfig
 from verl.trainer.distillation.losses import is_distillation_enabled
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
+from verl.trainer.ppo.hpf_schedule import get_hpf_role_phase
 from verl.trainer.ppo.hpf_utils import (
     build_hpf_corrected_leader_batch,
     build_hpf_fresh_leader_batch,
@@ -52,7 +53,6 @@ from verl.trainer.ppo.hpf_utils import (
     configure_hpf_transition_behavior_log_probs,
     estimate_hpf_transition_return,
 )
-from verl.trainer.ppo.hpf_schedule import get_hpf_role_phase
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
@@ -61,6 +61,7 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.reward import extract_reward
+from verl.trainer.ppo.sir_resampling import SIRSelectionPlan, build_sir_selection_plan
 from verl.trainer.ppo.utils import (
     Role,
     WorkerType,
@@ -645,6 +646,212 @@ class RayPPOTrainer:
                 still_pending.append(f)
         self._dump_futures = still_pending
 
+    @staticmethod
+    def _write_sir_pool(rows: list[dict[str, Any]], dump_path: str, global_step: int) -> None:
+        """Write one JSON object per prompt, containing its complete SIR pool."""
+        os.makedirs(dump_path, exist_ok=True)
+        filename = os.path.join(dump_path, f"{global_step}.jsonl")
+        with open(filename, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        print(f"[SIR] Dumped full rollout pool to {filename}", flush=True)
+
+    def _dump_sir_pool(
+        self,
+        pool_batch: DataProto,
+        plan: SIRSelectionPlan,
+        *,
+        dump_path: str,
+        dump_token_log_probs: bool,
+    ) -> None:
+        """Materialize a compact, group-oriented audit record before resampling."""
+        response_mask = pool_batch.batch["response_mask"].detach().cpu().bool().numpy()
+        responses = pool_batch.batch["responses"].detach().cpu().numpy()
+        rollout_log_probs = pool_batch.batch["rollout_log_probs"].detach().cpu().float().numpy()
+        response_attention_mask = pool_batch.batch["attention_mask"][:, -responses.shape[1] :]
+        response_attention_mask = response_attention_mask.detach().cpu().bool().numpy()
+        prompts = pool_batch.batch["prompts"][:: plan.pool_size].detach().cpu()
+        decoded_prompts = self.tokenizer.batch_decode(prompts, skip_special_tokens=True)
+
+        eos_ids: set[int] = set()
+        for value in (
+            getattr(self.tokenizer, "eos_token_id", None),
+            getattr(self.tokenizer, "eos_token_ids", None),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                eos_ids.update(int(item) for item in value)
+            else:
+                eos_ids.add(int(value))
+
+        rows: list[dict[str, Any]] = []
+        for group in plan.groups:
+            start = group.group_index * plan.pool_size
+            first_item = pool_batch[start]
+            reward_model = first_item.non_tensor_batch.get("reward_model", {})
+            ground_truth = reward_model.get("ground_truth") if isinstance(reward_model, dict) else None
+            data_source = first_item.non_tensor_batch.get("data_source")
+            prompt_uid = str(first_item.non_tensor_batch.get("uid", group.group_index))
+            candidates = []
+            for local_index in range(plan.pool_size):
+                row_index = start + local_index
+                sampled_positions = response_mask[row_index]
+                valid_response_positions = response_attention_mask[row_index]
+                sampled_token_ids = responses[row_index][sampled_positions].astype(np.int64).tolist()
+                response_token_ids = responses[row_index][valid_response_positions].astype(np.int64).tolist()
+                sampled_log_probs = rollout_log_probs[row_index][sampled_positions].astype(np.float64).tolist()
+                score = (
+                    float(pool_batch.batch["rm_scores"][row_index].sum().detach().cpu().item())
+                    if "rm_scores" in pool_batch.batch.keys()
+                    else None
+                )
+                candidate = {
+                    "pool_index": local_index,
+                    "request_id": (
+                        str(pool_batch.non_tensor_batch["request_id"][row_index])
+                        if "request_id" in pool_batch.non_tensor_batch
+                        else None
+                    ),
+                    "response": self.tokenizer.decode(response_token_ids, skip_special_tokens=True),
+                    "response_token_ids": response_token_ids,
+                    "sampled_token_ids": sampled_token_ids,
+                    "sampled_token_count": len(sampled_token_ids),
+                    "ends_with_eos": bool(sampled_token_ids and sampled_token_ids[-1] in eos_ids),
+                    "score": score,
+                    "prefix_joint_log_prob": float(group.prefix_joint_log_probs[local_index]),
+                    "sir_weight": float(group.weights[local_index]),
+                    "selected_count": int(group.selected_counts[local_index]),
+                    "selected_draws": list(group.selected_draws[local_index]),
+                }
+                if dump_token_log_probs:
+                    candidate["sampled_token_log_probs"] = sampled_log_probs
+                for reward_key in ("acc", "pred", "overlong_reward", "overlong"):
+                    if reward_key in pool_batch.non_tensor_batch:
+                        value = pool_batch.non_tensor_batch[reward_key][row_index]
+                        candidate[reward_key] = value.item() if hasattr(value, "item") else value
+                candidates.append(candidate)
+
+            rows.append(
+                {
+                    "step": self.global_steps,
+                    "prompt_index": group.group_index,
+                    "prompt_uid": prompt_uid,
+                    "data_source": data_source,
+                    "prompt": decoded_prompts[group.group_index],
+                    "ground_truth": ground_truth,
+                    "pool_size": plan.pool_size,
+                    "selected_count": plan.selected_count,
+                    "block_length": plan.block_length,
+                    "alpha": plan.alpha,
+                    "resampling": "categorical_with_replacement",
+                    "sir_seed": group.seed,
+                    "sir_ess": group.effective_sample_size,
+                    "selected_pool_indices": group.selected_local_indices.tolist(),
+                    "candidates": candidates,
+                }
+            )
+
+        future = self._dump_executor.submit(self._write_sir_pool, rows, dump_path, self.global_steps)
+        self._dump_futures.append(future)
+        still_pending = []
+        for pending in self._dump_futures:
+            if pending.done():
+                pending.result()
+            else:
+                still_pending.append(pending)
+        self._dump_futures = still_pending
+
+    def _apply_sir_resampling(
+        self,
+        prompt_batch: DataProto,
+        gen_batch_output: DataProto,
+        *,
+        pool_size: int,
+        sir_config: Any,
+    ) -> tuple[DataProto, dict[str, float]]:
+        """Build a full prompt/response pool, audit it, and return K SIR draws."""
+        pool_batch = prompt_batch.repeat(repeat_times=pool_size, interleave=True)
+        pool_batch = pool_batch.union(gen_batch_output)
+        if "response_mask" not in pool_batch.batch.keys():
+            pool_batch.batch["response_mask"] = compute_response_mask(pool_batch)
+        if "rollout_log_probs" not in pool_batch.batch.keys():
+            raise ValueError(
+                "SIR requires chosen-token rollout_log_probs; set "
+                "actor_rollout_ref.rollout.calculate_log_probs=True"
+            )
+        if "uid" in pool_batch.non_tensor_batch:
+            if len(pool_batch.non_tensor_batch["uid"]) % pool_size != 0:
+                raise ValueError("SIR rollout row count is not divisible by the configured pool size N")
+            grouped_uids = np.asarray(pool_batch.non_tensor_batch["uid"], dtype=object).reshape(-1, pool_size)
+            if any(len(set(group.tolist())) != 1 for group in grouped_uids):
+                raise ValueError("SIR requires each prompt's N rollout rows to remain contiguous")
+
+        selected_count = int(sir_config.get("selected_count"))
+        block_length = int(sir_config.get("block_length"))
+        alpha = float(sir_config.get("alpha"))
+        seed = int(sir_config.get("seed", 42))
+        plan = build_sir_selection_plan(
+            pool_batch.batch["rollout_log_probs"].detach().cpu().float().numpy(),
+            pool_batch.batch["response_mask"].detach().cpu().numpy(),
+            pool_size=pool_size,
+            selected_count=selected_count,
+            block_length=block_length,
+            alpha=alpha,
+            seed=seed,
+            global_step=self.global_steps,
+        )
+        if len(plan.groups) != len(prompt_batch.batch):
+            raise ValueError(
+                f"SIR formed {len(plan.groups)} groups for {len(prompt_batch.batch)} prompts; "
+                "rollout output ordering or cardinality changed unexpectedly"
+            )
+
+        if self._parse_hpf_bool(sir_config.get("dump_pool", True), True):
+            dump_path = sir_config.get("dump_dir", None)
+            if not dump_path:
+                rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+                if not rollout_data_dir:
+                    raise ValueError(
+                        "SIR pool recording is enabled but neither algorithm.sir.dump_dir nor "
+                        "trainer.rollout_data_dir is configured"
+                    )
+                dump_path = os.path.join(str(rollout_data_dir), "sir_pool")
+            self._dump_sir_pool(
+                pool_batch,
+                plan,
+                dump_path=str(dump_path),
+                dump_token_log_probs=self._parse_hpf_bool(
+                    sir_config.get("dump_token_log_probs", True), True
+                ),
+            )
+
+        selected_batch = pool_batch.select_idxs(plan.selected_global_indices)
+        selected_joint_log_probs = []
+        selected_weights = []
+        for group in plan.groups:
+            selected_joint_log_probs.extend(group.prefix_joint_log_probs[group.selected_local_indices].tolist())
+            selected_weights.extend(group.weights[group.selected_local_indices].tolist())
+        selected_batch.non_tensor_batch["sir_pool_index"] = plan.selected_pool_indices.copy()
+        selected_batch.non_tensor_batch["sir_draw_index"] = plan.selected_draw_indices.copy()
+        selected_batch.non_tensor_batch["sir_group_index"] = np.repeat(
+            np.arange(len(plan.groups), dtype=np.int64), plan.selected_count
+        )
+        selected_batch.non_tensor_batch["sir_prefix_joint_log_prob"] = np.asarray(
+            selected_joint_log_probs, dtype=np.float64
+        )
+        selected_batch.non_tensor_batch["sir_weight"] = np.asarray(selected_weights, dtype=np.float64)
+        selected_batch.meta_info["sir_pool_size"] = pool_size
+        selected_batch.meta_info["sir_selected_count"] = selected_count
+
+        print(
+            "[SIR] resampled rollout groups "
+            f"step={self.global_steps} prompts={len(plan.groups)} N={pool_size} K={selected_count} "
+            f"B={block_length} alpha={alpha} ess_mean={plan.metrics()['sir/ess_mean']:.3f}",
+            flush=True,
+        )
+        return selected_batch, plan.metrics()
+
     def _init_dump_executor(self):
         """Create or recreate the dump executor and futures list."""
         self._dump_executor = ThreadPoolExecutor(max_workers=1)
@@ -714,6 +921,11 @@ class RayPPOTrainer:
                 "hpf_transition_prefix_horizon",
                 "hpf_prefix_ids",
                 "hpf_transition_suffix_ids",
+                "sir_pool_index",
+                "sir_draw_index",
+                "sir_group_index",
+                "sir_prefix_joint_log_prob",
+                "sir_weight",
             ):
                 if key in batch.non_tensor_batch:
                     reward_extra_infos_to_dump.setdefault(key, batch.non_tensor_batch[key].tolist())
@@ -1525,6 +1737,7 @@ class RayPPOTrainer:
         progress_log_interval: int | None = None,
         temperature: float | None = None,
         mini_batch_size_multiplier: int = 1,
+        responses_per_prompt: int | None = None,
         shuffle_override: bool | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> DataProto:
@@ -1548,7 +1761,9 @@ class RayPPOTrainer:
             else False
         )
         ppo_mini_batch_size = self.config.actor_rollout_ref.actor.ppo_mini_batch_size
-        ppo_mini_batch_size = ppo_mini_batch_size * self.config.actor_rollout_ref.rollout.n
+        if responses_per_prompt is None:
+            responses_per_prompt = self.config.actor_rollout_ref.rollout.n
+        ppo_mini_batch_size = ppo_mini_batch_size * int(responses_per_prompt)
         ppo_mini_batch_size *= int(mini_batch_size_multiplier)
         ppo_epochs = self.config.actor_rollout_ref.actor.ppo_epochs
         seed = self.config.actor_rollout_ref.actor.data_loader_seed
@@ -2872,7 +3087,9 @@ class RayPPOTrainer:
         if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
             raise ValueError("HPF tree rollout does not support REMAX baseline generation.")
         if self.config.actor_rollout_ref.actor.get("use_rollout_log_probs", False):
-            raise ValueError("HPF tree rollout requires recomputing old_log_probs; disable actor.use_rollout_log_probs.")
+            raise ValueError(
+                "HPF tree rollout requires recomputing old_log_probs; disable actor.use_rollout_log_probs."
+            )
 
         hpf_config = self.config.algorithm.get("hpf_rlvr", {})
         tree_config = hpf_config.get("tree_rollout", {})
@@ -3456,6 +3673,47 @@ class RayPPOTrainer:
             .get("enable", False),
             False,
         )
+        sir_config = self.config.algorithm.get("sir", {})
+        sir_enabled = self._parse_hpf_bool(sir_config.get("enable", False), False)
+        if sir_enabled:
+            rollout_pool_size = int(self.config.actor_rollout_ref.rollout.n)
+            sir_selected_count = int(sir_config.get("selected_count"))
+            sir_block_length = int(sir_config.get("block_length"))
+            sir_alpha = float(sir_config.get("alpha"))
+            if self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO:
+                raise ValueError("algorithm.sir is only supported with algorithm.adv_estimator=grpo")
+            if rollout_pool_size < 2:
+                raise ValueError(f"SIR rollout pool N must be at least 2, got {rollout_pool_size}")
+            if sir_selected_count < 2 or sir_selected_count > rollout_pool_size:
+                raise ValueError(
+                    "algorithm.sir.selected_count must satisfy 2 <= K <= rollout.n; "
+                    f"got K={sir_selected_count}, N={rollout_pool_size}"
+                )
+            if sir_block_length <= 0 or sir_block_length > int(self.config.data.max_response_length):
+                raise ValueError(
+                    "algorithm.sir.block_length must satisfy 1 <= B <= data.max_response_length; "
+                    f"got B={sir_block_length}, max={self.config.data.max_response_length}"
+                )
+            if not np.isfinite(sir_alpha) or sir_alpha <= 0:
+                raise ValueError(f"algorithm.sir.alpha must be finite and positive, got {sir_alpha}")
+            if not self._parse_hpf_bool(
+                self.config.actor_rollout_ref.rollout.get("calculate_log_probs", False), False
+            ):
+                raise ValueError(
+                    "algorithm.sir requires actor_rollout_ref.rollout.calculate_log_probs=True"
+                )
+            if (
+                self._parse_hpf_bool(hpf_config.get("enable", False), False)
+                or self._parse_hpf_bool(hpf_config.get("tree_rollout", {}).get("enable", False), False)
+                or mixed_policy_grpo
+            ):
+                raise ValueError("algorithm.sir is a GRPO-baseline mode and cannot be combined with HPF rollout paths")
+            print(
+                "[SIR] enabled "
+                f"N={rollout_pool_size} K={sir_selected_count} B={sir_block_length} alpha={sir_alpha} "
+                "resampling=categorical_with_replacement",
+                flush=True,
+            )
         physical_total_epochs = int(self.config.trainer.total_epochs)
         if role_phased_training:
             follower_phase_epochs = int(role_phased_config.get("follower_epochs", 1))
@@ -3537,7 +3795,7 @@ class RayPPOTrainer:
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
-                rollout_n = self.config.actor_rollout_ref.rollout.n
+                rollout_n = int(self.config.actor_rollout_ref.rollout.n)
                 use_hpf_tree_rollout = self._hpf_tree_rollout_enabled()
                 hpf_round_index = (
                     role_round_index
@@ -3644,14 +3902,28 @@ class RayPPOTrainer:
                         del combined_gen_batch
                     else:
                         del combined_gen_batch, combined_gen_output
-                    # repeat to align with repeated responses in rollout
+                    # Repeat prompts to align with generated responses. In SIR mode,
+                    # first retain and record the full N-way pool, then pass only K
+                    # resampled rows to the unchanged reward/GRPO update path.
                     prompt_batch_for_hpf = batch
                     transition_next_batch = None
-                    if transition_next_gen_output is not None:
-                        transition_next_batch = batch.repeat(repeat_times=effective_rollout_n, interleave=True)
-                        transition_next_batch = transition_next_batch.union(transition_next_gen_output)
-                    batch = batch.repeat(repeat_times=effective_rollout_n, interleave=True)
-                    batch = batch.union(gen_batch_output)
+                    if sir_enabled:
+                        batch, sir_metrics = self._apply_sir_resampling(
+                            batch,
+                            gen_batch_output,
+                            pool_size=rollout_n,
+                            sir_config=sir_config,
+                        )
+                        effective_rollout_n = int(sir_config.get("selected_count"))
+                        metrics.update(sir_metrics)
+                    else:
+                        if transition_next_gen_output is not None:
+                            transition_next_batch = batch.repeat(
+                                repeat_times=effective_rollout_n, interleave=True
+                            )
+                            transition_next_batch = transition_next_batch.union(transition_next_gen_output)
+                        batch = batch.repeat(repeat_times=effective_rollout_n, interleave=True)
+                        batch = batch.union(gen_batch_output)
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -3917,6 +4189,7 @@ class RayPPOTrainer:
                                         else None
                                     ),
                                     progress_log_interval=actor_progress_log_interval,
+                                    responses_per_prompt=effective_rollout_n,
                                 )
 
                         # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.

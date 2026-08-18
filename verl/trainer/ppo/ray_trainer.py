@@ -1273,12 +1273,15 @@ class RayPPOTrainer:
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            dump_extra_infos = dict(reward_extra_infos_dict)
+            dump_extra_infos["uid"] = list(sample_uids)
+            dump_extra_infos["data_source"] = np.concatenate(data_source_lst, axis=0).tolist()
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
                 gts=sample_gts,
                 scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
+                reward_extra_infos_dict=dump_extra_infos,
                 dump_path=val_data_dir,
             )
 

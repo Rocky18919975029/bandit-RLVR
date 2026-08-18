@@ -93,6 +93,27 @@ contain only the `K` rows used for training and includes their source pool and
 draw indices. Set `SIR_DUMP_TOKEN_LOG_PROBS=False` only when storage is more
 important than post-hoc reweighting at different block lengths.
 
+## Post-hoc AIME 2024 validation
+
+`run_aime24_posthoc_validation_fsdp.sh` reuses VERL's ordinary validation generation
+and DAPO strict-boxed reward manager, then reports sample accuracy and standard
+unbiased pass@k. `MODEL_PATH` may point to an untrained Hugging Face base model,
+an exported `actor/huggingface` directory, or its enclosing `global_step_*`
+directory. The defaults generate 32 completions per AIME 2024 problem at
+temperature 1.0 and top-p 1.0 with a 3072-token response limit.
+
+```bash
+MODEL_PATH=/path/to/global_step_10 \
+EVAL_N=32 \
+PASS_KS=1,2,4,8,16,32 \
+bash examples/grpo_trainer/run_aime24_posthoc_validation_fsdp.sh
+```
+
+Raw VERL generations are retained under `OUTPUT_DIR/raw`. The script writes
+`summary.json`, `summary.csv`, and `per_problem.csv` beside them. For a problem
+with `c` correct completions among `n`, it computes
+`pass@k = 1 - C(n-c,k) / C(n,k)` and then averages across the 30 problems.
+
 ## Canonical scripts
 
 All scripts in this directory follow the naming convention:

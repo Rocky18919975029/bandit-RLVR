@@ -166,6 +166,15 @@ Raw VERL generations are retained under `OUTPUT_DIR/raw`. The script writes
 with `c` correct completions among `n`, it computes
 `pass@k = 1 - C(n-c,k) / C(n,k)` and then averages across the 30 problems.
 
+For repeated evaluations of two checkpoints, use
+`analyze_paired_aime24_runs.py`. It aligns problems by stable input and ground
+truth rather than the run-local random UID, pools all completions for each
+problem, recomputes unbiased pass@k, and reports a paired percentile-bootstrap
+interval by resampling the 30 AIME problems. The output directory contains
+`summary.json`, `summary.csv`, `per_problem.csv`, and `per_seed.csv`. The
+bootstrap interval is conditional on the observed completions; its unit is the
+AIME problem, not an individual rollout.
+
 ## Canonical scripts
 
 All scripts in this directory follow the naming convention:

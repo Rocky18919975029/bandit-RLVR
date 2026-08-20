@@ -102,6 +102,15 @@ GRPO/PPO update unchanged. Prompt order, chat-template output, ground truth,
 data source, token/log-prob cardinality, K, and step are checked before any
 actor update; a mismatch aborts the run.
 
+Before enabling full-sequence tempering, use
+`analyze_tempered_initial_pool.py` on a saved pool. It scans escort weights
+`w_i(alpha) proportional to exp((alpha - 1) L_i)` over the original initial
+trajectories and writes ESS, maximum-weight, tempered-accuracy, and
+reward/log-probability-covariance curves. The covariance has the identity
+`Cov_q(R, L) = d E_q[R] / d alpha`. The report also identifies the largest
+scanned alpha for which a configured fraction of prompt groups retains a
+specified ESS fraction; it does not change or train a model.
+
 ## Post-hoc AIME 2024 validation
 
 `run_aime24_posthoc_validation_fsdp.sh` reuses VERL's ordinary validation generation

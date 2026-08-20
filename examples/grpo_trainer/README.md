@@ -111,12 +111,13 @@ reward/log-probability-covariance curves. The covariance has the identity
 scanned alpha for which a configured fraction of prompt groups retains a
 specified ESS fraction; it does not change or train a model.
 
-## Exact-replay tempered GRPO comparison
+## Tempered GRPO comparison and continued training
 
-`TEMPERED_GRPO_ENABLE=True` changes only the GRPO advantage computed from an
-exactly replayed initial group. It requires `SIR_INITIAL_REPLAY_PATH`, keeps
-the saved trajectories, rewards, behavior log-probabilities, PPO loss, batch
-order, and optimizer path fixed, and is currently restricted to one step.
+`TEMPERED_GRPO_ENABLE=True` changes only the GRPO advantage computation. With
+`SIR_INITIAL_REPLAY_PATH`, it keeps the saved trajectories, rewards, behavior
+log-probabilities, PPO loss, batch order, and optimizer path fixed for a strict
+one-step comparison. Without that path, it applies the same computation to
+fresh online rollout groups and can continue training from a full checkpoint.
 
 For complete response `i`, including its EOS token when present, it computes
 
@@ -132,6 +133,13 @@ implementation calls canonical GRPO directly, so the baseline is unchanged.
 The configured ESS constraint uses fixed Rényi order 2; `tempering_beta` is a
 different parameter. The run fails before the actor update if too few groups
 meet the ESS budget.
+
+To continue a checkpoint, set `RESUME_MODE=resume_path`, point
+`RESUME_FROM_PATH` at the enclosing `global_step_*` directory (not only its
+`actor/huggingface` export), and set `TOTAL_TRAINING_STEPS` to the desired
+absolute final step. For example, continuing step 1 for two more updates uses
+`TOTAL_TRAINING_STEPS=3`. The optimizer, scheduler, RNG extras, and stateful
+dataloader are restored from the full checkpoint.
 
 For the saved 512-by-16 initial pool, the predeclared 95%-of-groups budget
 selected `TEMPERING_BETA=1.0033251003215344`, with

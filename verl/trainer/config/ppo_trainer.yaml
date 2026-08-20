@@ -146,9 +146,9 @@ algorithm:
     # K trajectories from a saved branched-SIR pool as an ordinary GRPO group.
     initial_replay_path: null
 
-  # Escort-policy GRPO on an exact saved rollout group. This is deliberately
-  # restricted to the one-step initial-replay comparison while the method is
-  # being validated against the canonical GRPO control.
+  # Escort-policy GRPO on either fresh online rollouts or an exact saved
+  # rollout group. Exact replay supports strict one-step comparisons against
+  # canonical GRPO, while online mode supports continued training.
   tempered_grpo:
 
     enable: False

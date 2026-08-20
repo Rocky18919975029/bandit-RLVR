@@ -77,6 +77,8 @@ export CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-PCI_BUS_ID}
 export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
 
 SAVE_CONTENTS=${SAVE_CONTENTS:-"['model','optimizer','extra','hf_model']"}
+RESUME_MODE=${RESUME_MODE:-disable}
+RESUME_FROM_PATH=${RESUME_FROM_PATH:-}
 
 if (( ROLLOUT_N < 2 )); then
     echo "GRPO requires ROLLOUT_N >= 2; got ${ROLLOUT_N}" >&2
@@ -105,10 +107,15 @@ if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
         exit 1
     fi
 fi
-if [[ "${TEMPERED_GRPO_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
-    && [ -z "${SIR_INITIAL_REPLAY_PATH}" ]; then
-    echo "Tempered GRPO currently requires SIR_INITIAL_REPLAY_PATH for the exact one-step comparison" >&2
-    exit 1
+if [ "${RESUME_MODE}" = "resume_path" ]; then
+    if [ -z "${RESUME_FROM_PATH}" ]; then
+        echo "RESUME_MODE=resume_path requires RESUME_FROM_PATH" >&2
+        exit 1
+    fi
+    if [[ "${RESUME_FROM_PATH}" != *global_step_* ]] || [ ! -d "${RESUME_FROM_PATH}/actor" ]; then
+        echo "Resume checkpoint must be a global_step_* directory containing actor/: ${RESUME_FROM_PATH}" >&2
+        exit 1
+    fi
 fi
 if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
     && [ "${SIR_POOL_MODE}" = "branched_prefix" ] \
@@ -229,8 +236,11 @@ TRAINER_COMMON=(
     trainer.save_freq=${SAVE_FREQ:-1}
     trainer.test_freq=${TEST_FREQ:-1}
     trainer.total_epochs=${TOTAL_EPOCHS}
-    trainer.resume_mode=${RESUME_MODE:-disable}
+    trainer.resume_mode=${RESUME_MODE}
 )
+if [ "${RESUME_MODE}" = "resume_path" ]; then
+    TRAINER_COMMON+=(trainer.resume_from_path="${RESUME_FROM_PATH}")
+fi
 
 case "${MODE}" in
     train)

@@ -3989,11 +3989,6 @@ class RayPPOTrainer:
             tempering_beta = float(tempered_grpo_config.get("tempering_beta", 1.0))
             if self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO:
                 raise ValueError("algorithm.tempered_grpo requires algorithm.adv_estimator=grpo")
-            if not sir_initial_replay_path:
-                raise ValueError(
-                    "algorithm.tempered_grpo is currently restricted to the exact one-step comparison; "
-                    "set algorithm.sir.initial_replay_path"
-                )
             if sir_enabled:
                 raise ValueError("algorithm.tempered_grpo cannot be combined with SIR resampling")
             if not self._parse_hpf_bool(
@@ -4012,7 +4007,8 @@ class RayPPOTrainer:
                     f"got {tempering_beta}"
                 )
             print(
-                "[TEMPERED GRPO] enabled exact_initial_replay "
+                "[TEMPERED GRPO] enabled "
+                f"mode={'exact_initial_replay' if sir_initial_replay_path else 'online_rollout'} "
                 f"tempering_beta={tempering_beta} renyi_order=2 "
                 f"ess_budget_fraction={float(tempered_grpo_config.get('ess_budget_fraction', 0.5))} "
                 f"required_group_fraction={float(tempered_grpo_config.get('required_group_fraction', 0.95))}",

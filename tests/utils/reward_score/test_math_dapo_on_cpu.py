@@ -29,3 +29,11 @@ def test_math_dapo_can_explicitly_use_legacy_verifier():
     result = default_compute_score("math_dapo", "Answer: 4", "4", strict_box_verify=False)
 
     assert result == {"score": 1.0, "acc": True, "pred": "4"}
+
+
+def test_math500_alias_uses_strict_boxed_verifier():
+    unboxed = default_compute_score("math500", "Answer: 4", "4")
+    boxed = default_compute_score("math500", r"Therefore, \boxed{4}", "4")
+
+    assert unboxed == {"score": -1.0, "acc": False, "pred": None}
+    assert boxed == {"score": 1.0, "acc": True, "pred": "4"}

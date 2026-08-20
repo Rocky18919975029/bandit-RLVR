@@ -111,6 +111,33 @@ reward/log-probability-covariance curves. The covariance has the identity
 scanned alpha for which a configured fraction of prompt groups retains a
 specified ESS fraction; it does not change or train a model.
 
+## Exact-replay tempered GRPO comparison
+
+`TEMPERED_GRPO_ENABLE=True` changes only the GRPO advantage computed from an
+exactly replayed initial group. It requires `SIR_INITIAL_REPLAY_PATH`, keeps
+the saved trajectories, rewards, behavior log-probabilities, PPO loss, batch
+order, and optimizer path fixed, and is currently restricted to one step.
+
+For complete response `i`, including its EOS token when present, it computes
+
+```text
+L_i = sum_t log pi_rollout(y_i,t | x,y_i,<t)
+w_i = softmax((tempering_beta - 1) L_i)
+A_i = K w_i (R_i - sum_j w_j R_j) / weighted_sample_std(R)
+```
+
+The constant global factor `tempering_beta` from the exact escort-objective
+gradient is absorbed into the learning-rate scale. At `tempering_beta=1`, the
+implementation calls canonical GRPO directly, so the baseline is unchanged.
+The configured ESS constraint uses fixed Rényi order 2; `tempering_beta` is a
+different parameter. The run fails before the actor update if too few groups
+meet the ESS budget.
+
+For the saved 512-by-16 initial pool, the predeclared 95%-of-groups budget
+selected `TEMPERING_BETA=1.0033251003215344`, with
+`TEMPERED_GRPO_ESS_BUDGET_FRACTION=0.5` (ESS at least 8 of 16) and
+`TEMPERED_GRPO_REQUIRED_GROUP_FRACTION=0.95`.
+
 ## Post-hoc AIME 2024 validation
 
 `run_aime24_posthoc_validation_fsdp.sh` reuses VERL's ordinary validation generation

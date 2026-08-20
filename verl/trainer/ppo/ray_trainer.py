@@ -254,14 +254,39 @@ def compute_advantage(
     elif adv_estimator == AdvantageEstimator.GRPO:
         # Initialize the mask for GRPO calculation
         grpo_calculation_mask = data.batch["response_mask"]
-
-        # Call compute_grpo_outcome_advantage with parameters matching its definition
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(
-            token_level_rewards=data.batch["token_level_rewards"],
-            response_mask=grpo_calculation_mask,
-            index=data.non_tensor_batch["uid"],
-            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        tempered_config = config.get("tempered_grpo", {}) if config is not None else {}
+        tempered_enabled_value = tempered_config.get("enable", False)
+        tempered_enabled = (
+            tempered_enabled_value
+            if isinstance(tempered_enabled_value, bool)
+            else str(tempered_enabled_value).strip().lower() in {"1", "true", "yes", "on"}
         )
+        if tempered_enabled:
+            if "rollout_log_probs" not in data.batch:
+                raise ValueError(
+                    "algorithm.tempered_grpo requires chosen-token rollout_log_probs; "
+                    "set actor_rollout_ref.rollout.calculate_log_probs=True"
+                )
+            advantages, returns, tempered_metrics = core_algos.compute_tempered_grpo_outcome_advantage(
+                token_level_rewards=data.batch["token_level_rewards"],
+                response_mask=grpo_calculation_mask,
+                index=data.non_tensor_batch["uid"],
+                rollout_log_probs=data.batch["rollout_log_probs"],
+                tempering_beta=float(tempered_config.get("tempering_beta", 1.0)),
+                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                ess_budget_fraction=float(tempered_config.get("ess_budget_fraction", 0.5)),
+                required_group_fraction=float(tempered_config.get("required_group_fraction", 0.95)),
+                fail_on_ess_budget_violation=bool(tempered_config.get("fail_on_ess_budget_violation", True)),
+            )
+            data.meta_info["tempered_grpo_metrics"] = tempered_metrics
+        else:
+            # Call compute_grpo_outcome_advantage with parameters matching its definition
+            advantages, returns = core_algos.compute_grpo_outcome_advantage(
+                token_level_rewards=data.batch["token_level_rewards"],
+                response_mask=grpo_calculation_mask,
+                index=data.non_tensor_batch["uid"],
+                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+            )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
     else:
@@ -3956,6 +3981,43 @@ class RayPPOTrainer:
         sir_initial_replay_path = (
             str(sir_initial_replay_path_value).strip() if sir_initial_replay_path_value else ""
         )
+        tempered_grpo_config = self.config.algorithm.get("tempered_grpo", {})
+        tempered_grpo_enabled = self._parse_hpf_bool(
+            tempered_grpo_config.get("enable", False), False
+        )
+        if tempered_grpo_enabled:
+            tempering_beta = float(tempered_grpo_config.get("tempering_beta", 1.0))
+            if self.config.algorithm.adv_estimator != AdvantageEstimator.GRPO:
+                raise ValueError("algorithm.tempered_grpo requires algorithm.adv_estimator=grpo")
+            if not sir_initial_replay_path:
+                raise ValueError(
+                    "algorithm.tempered_grpo is currently restricted to the exact one-step comparison; "
+                    "set algorithm.sir.initial_replay_path"
+                )
+            if sir_enabled:
+                raise ValueError("algorithm.tempered_grpo cannot be combined with SIR resampling")
+            if not self._parse_hpf_bool(
+                self.config.actor_rollout_ref.rollout.get("calculate_log_probs", False), False
+            ):
+                raise ValueError("algorithm.tempered_grpo requires rollout.calculate_log_probs=True")
+            if not self._parse_hpf_bool(
+                self.config.algorithm.get("norm_adv_by_std_in_grpo", True), True
+            ):
+                raise ValueError(
+                    "the exact tempered-GRPO comparison requires algorithm.norm_adv_by_std_in_grpo=True"
+                )
+            if not np.isfinite(tempering_beta) or tempering_beta <= 0:
+                raise ValueError(
+                    "algorithm.tempered_grpo.tempering_beta must be finite and positive; "
+                    f"got {tempering_beta}"
+                )
+            print(
+                "[TEMPERED GRPO] enabled exact_initial_replay "
+                f"tempering_beta={tempering_beta} renyi_order=2 "
+                f"ess_budget_fraction={float(tempered_grpo_config.get('ess_budget_fraction', 0.5))} "
+                f"required_group_fraction={float(tempered_grpo_config.get('required_group_fraction', 0.95))}",
+                flush=True,
+            )
         sir_branched_pool = False
         if sir_initial_replay_path:
             replay_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
@@ -4513,6 +4575,22 @@ class RayPPOTrainer:
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 config=self.config.algorithm,
                             )
+                            tempered_metrics = batch.meta_info.pop("tempered_grpo_metrics", None)
+                            if tempered_metrics is not None:
+                                metrics.update(tempered_metrics)
+                                print(
+                                    "[TEMPERED GRPO] advantage computed "
+                                    f"step={self.global_steps} "
+                                    f"beta={tempered_metrics['tempered_grpo/tempering_beta']:.12g} "
+                                    f"ess_mean={tempered_metrics['tempered_grpo/ess_mean']:.3f} "
+                                    f"ess_min={tempered_metrics['tempered_grpo/ess_min']:.3f} "
+                                    "groups_meeting_budget="
+                                    f"{tempered_metrics['tempered_grpo/groups_meeting_ess_budget_fraction']:.4f} "
+                                    f"max_weight_p95={tempered_metrics['tempered_grpo/max_weight_p95']:.4f} "
+                                    "reward_logprob_covariance="
+                                    f"{tempered_metrics['tempered_grpo/reward_logprob_covariance_mean']:.4f}",
+                                    flush=True,
+                                )
                             if transition_next_batch is not None:
                                 if transition_next_reward_extra_infos_dict:
                                     transition_next_batch.non_tensor_batch.update(

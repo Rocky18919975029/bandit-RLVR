@@ -26,6 +26,7 @@ from verl.trainer.ppo.core_algos import (
     compute_grpo_vectorized_outcome_advantage,
     compute_rloo_outcome_advantage,
     compute_rloo_vectorized_outcome_advantage,
+    compute_tempered_grpo_outcome_advantage,
     get_adv_estimator_fn,
     kl_penalty,
     register_adv_est,
@@ -278,6 +279,119 @@ def test_grpo_vectorized_matches_original_for_low_variance_rewards():
 
     assert torch.allclose(adv1, adv2, rtol=1e-5, atol=1e-6)
     assert torch.allclose(ret1, ret2, rtol=1e-5, atol=1e-6)
+
+
+def test_tempered_grpo_beta_one_is_exact_canonical_grpo():
+    rewards = torch.tensor(
+        [
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ]
+    )
+    response_mask = torch.tensor(
+        [
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ]
+    )
+    rollout_log_probs = torch.tensor(
+        [
+            [-0.1, -0.2, 0.0],
+            [-0.3, -0.4, -0.5],
+            [-2.0, -3.0, -4.0],
+            [-5.0, 0.0, 0.0],
+        ]
+    )
+    index = np.array(["a", "a", "b", "b"], dtype=object)
+
+    canonical_advantages, canonical_returns = compute_grpo_outcome_advantage(
+        token_level_rewards=rewards,
+        response_mask=response_mask,
+        index=index,
+    )
+    tempered_advantages, tempered_returns, metrics = compute_tempered_grpo_outcome_advantage(
+        token_level_rewards=rewards,
+        response_mask=response_mask,
+        index=index,
+        rollout_log_probs=rollout_log_probs,
+        tempering_beta=1.0,
+    )
+
+    assert torch.equal(tempered_advantages, canonical_advantages)
+    assert torch.equal(tempered_returns, canonical_returns)
+    assert metrics["tempered_grpo/ess_mean"] == 2.0
+    assert metrics["tempered_grpo/max_weight_max"] == 0.5
+
+
+def test_tempered_grpo_matches_manual_weighted_advantage_and_includes_last_token():
+    rewards = torch.tensor([[1.0], [-1.0], [-1.0]])
+    response_mask = torch.ones_like(rewards)
+    # The single valid position represents the complete response's final
+    # sampled token (EOS in the real replay path), so it must affect weights.
+    rollout_log_probs = torch.tensor([[-1.0], [-2.0], [-3.0]])
+    index = np.array(["prompt", "prompt", "prompt"], dtype=object)
+    beta = 1.2
+
+    advantages, returns, metrics = compute_tempered_grpo_outcome_advantage(
+        token_level_rewards=rewards,
+        response_mask=response_mask,
+        index=index,
+        rollout_log_probs=rollout_log_probs,
+        tempering_beta=beta,
+        fail_on_ess_budget_violation=False,
+    )
+
+    weights = torch.softmax((beta - 1.0) * rollout_log_probs[:, 0].to(torch.float64), dim=0)
+    scores = rewards[:, 0].to(torch.float64)
+    weighted_mean = torch.sum(weights * scores)
+    centered = scores - weighted_mean
+    weighted_variance = torch.sum(weights * centered.square()) / (1.0 - torch.sum(weights.square()))
+    expected = 3.0 * weights * centered / (torch.sqrt(weighted_variance) + 1e-6)
+
+    assert torch.allclose(advantages[:, 0], expected.to(torch.float32), rtol=1e-6, atol=1e-6)
+    assert torch.equal(advantages, returns)
+    assert metrics["tempered_grpo/ess_mean"] == pytest.approx(torch.reciprocal(torch.sum(weights.square())).item())
+
+
+def test_tempered_grpo_homogeneous_group_has_zero_advantage():
+    rewards = -torch.ones(4, 2)
+    response_mask = torch.ones_like(rewards)
+    rollout_log_probs = torch.tensor([[-1.0, -1.0], [-2.0, -2.0], [-3.0, -3.0], [-4.0, -4.0]])
+    index = np.array(["prompt"] * 4, dtype=object)
+
+    advantages, returns, _ = compute_tempered_grpo_outcome_advantage(
+        token_level_rewards=rewards,
+        response_mask=response_mask,
+        index=index,
+        rollout_log_probs=rollout_log_probs,
+        tempering_beta=1.01,
+        fail_on_ess_budget_violation=False,
+    )
+
+    assert torch.count_nonzero(advantages) == 0
+    assert torch.equal(advantages, returns)
+
+
+def test_tempered_grpo_fails_closed_when_ess_budget_is_exceeded():
+    rewards = torch.tensor([[1.0], [-1.0], [1.0], [-1.0]])
+    response_mask = torch.ones_like(rewards)
+    rollout_log_probs = torch.tensor([[0.0], [-100.0], [-200.0], [-300.0]])
+    index = np.array(["prompt"] * 4, dtype=object)
+
+    with pytest.raises(ValueError, match="ESS budget violation"):
+        compute_tempered_grpo_outcome_advantage(
+            token_level_rewards=rewards,
+            response_mask=response_mask,
+            index=index,
+            rollout_log_probs=rollout_log_probs,
+            tempering_beta=2.0,
+            ess_budget_fraction=0.5,
+            required_group_fraction=1.0,
+        )
 
 
 @pytest.mark.parametrize(

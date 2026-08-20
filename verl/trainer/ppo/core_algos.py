@@ -331,6 +331,170 @@ def compute_grpo_outcome_advantage(
     return scores, scores
 
 
+def compute_tempered_grpo_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    rollout_log_probs: torch.Tensor,
+    tempering_beta: float,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    ess_budget_fraction: float = 0.5,
+    required_group_fraction: float = 0.95,
+    fail_on_ess_budget_violation: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    """Compute the self-normalized escort-policy GRPO advantage.
+
+    Complete responses, including EOS when sampled, are treated as bandit
+    actions. For response ``i`` with rollout-policy joint log-probability
+    ``L_i``, the empirical escort weight is
+
+    ``w_i = softmax((tempering_beta - 1) * L_i)``.
+
+    The resulting scalar advantage is
+
+    ``K * w_i * (R_i - sum_j w_j R_j) / weighted_std(R)``.
+
+    The global factor ``tempering_beta`` in the exact escort-objective
+    gradient is omitted because it is constant across trajectories and only
+    rescales the learning rate. This convention makes ``tempering_beta=1``
+    exactly use the canonical GRPO implementation.
+    """
+    if not np.isfinite(tempering_beta) or tempering_beta <= 0:
+        raise ValueError(f"tempering_beta must be finite and positive, got {tempering_beta}")
+    if not 0 < ess_budget_fraction <= 1:
+        raise ValueError(f"ess_budget_fraction must be in (0, 1], got {ess_budget_fraction}")
+    if not 0 < required_group_fraction <= 1:
+        raise ValueError(f"required_group_fraction must be in (0, 1], got {required_group_fraction}")
+    if rollout_log_probs.shape != response_mask.shape:
+        raise ValueError(
+            "rollout_log_probs and response_mask must have identical shapes; "
+            f"got {tuple(rollout_log_probs.shape)} and {tuple(response_mask.shape)}"
+        )
+    if token_level_rewards.shape != response_mask.shape:
+        raise ValueError(
+            "token_level_rewards and response_mask must have identical shapes; "
+            f"got {tuple(token_level_rewards.shape)} and {tuple(response_mask.shape)}"
+        )
+    if len(index) != token_level_rewards.shape[0]:
+        raise ValueError(f"index length {len(index)} does not match batch size {token_level_rewards.shape[0]}")
+
+    mask = response_mask.bool()
+    if torch.any(mask.sum(dim=-1) == 0):
+        raise ValueError("tempered GRPO requires at least one sampled response token per trajectory")
+    if not torch.isfinite(rollout_log_probs[mask]).all():
+        raise ValueError("tempered GRPO received a non-finite chosen-token rollout log-probability")
+
+    scores = token_level_rewards.sum(dim=-1)
+    joint_log_probs = (rollout_log_probs.to(torch.float64) * mask).sum(dim=-1)
+    group_rows: dict[Any, list[int]] = defaultdict(list)
+    for row, group_id in enumerate(index):
+        group_rows[group_id].append(row)
+    if not group_rows:
+        raise ValueError("tempered GRPO received an empty batch")
+
+    # Preserve the canonical baseline exactly at beta=1, including its dtype
+    # and torch.std behavior. Metrics below still use the escort formulation.
+    canonical_advantages = None
+    if tempering_beta == 1.0:
+        canonical_advantages, _ = compute_grpo_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            response_mask=response_mask,
+            index=index,
+            epsilon=epsilon,
+            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+        )
+
+    scalar_advantages = torch.zeros_like(scores)
+    ess_values = []
+    max_weight_values = []
+    tempered_reward_values = []
+    covariance_values = []
+    budget_passes = []
+
+    with torch.no_grad():
+        for group_id, rows in group_rows.items():
+            if len(rows) < 2:
+                raise ValueError(f"tempered GRPO requires at least two trajectories for group {group_id!r}")
+            row_tensor = torch.as_tensor(rows, dtype=torch.long, device=scores.device)
+            group_scores = scores[row_tensor].to(torch.float64)
+            group_log_probs = joint_log_probs[row_tensor]
+            logits = (tempering_beta - 1.0) * group_log_probs
+            weights = torch.softmax(logits - logits.max(), dim=0)
+
+            weighted_mean = torch.sum(weights * group_scores)
+            centered_rewards = group_scores - weighted_mean
+            sum_weight_squared = torch.sum(weights.square())
+            ess = torch.reciprocal(sum_weight_squared)
+            variance_numerator = torch.sum(weights * centered_rewards.square())
+            variance_denominator = 1.0 - sum_weight_squared
+            homogeneous_rewards = torch.all(group_scores == group_scores[0])
+            if homogeneous_rewards:
+                # Avoid roundoff-only updates for all-correct/all-wrong groups.
+                centered_rewards = torch.zeros_like(centered_rewards)
+                variance_numerator = torch.zeros_like(variance_numerator)
+                group_advantages = torch.zeros_like(group_scores)
+            elif norm_adv_by_std_in_grpo:
+                if variance_denominator <= torch.finfo(torch.float64).eps:
+                    scale = torch.zeros((), dtype=torch.float64, device=scores.device)
+                else:
+                    scale = torch.sqrt(torch.clamp_min(variance_numerator / variance_denominator, 0.0))
+                group_advantages = len(rows) * weights * centered_rewards / (scale + epsilon)
+            else:
+                group_advantages = len(rows) * weights * centered_rewards
+
+            if canonical_advantages is None:
+                scalar_advantages[row_tensor] = group_advantages.to(scores.dtype)
+
+            weighted_log_prob_mean = torch.sum(weights * group_log_probs)
+            reward_log_prob_covariance = torch.sum(
+                weights * centered_rewards * (group_log_probs - weighted_log_prob_mean)
+            )
+            ess_threshold = len(rows) * ess_budget_fraction
+
+            ess_values.append(ess)
+            max_weight_values.append(weights.max())
+            tempered_reward_values.append(weighted_mean)
+            covariance_values.append(reward_log_prob_covariance)
+            budget_passes.append(ess >= ess_threshold)
+
+    ess_tensor = torch.stack(ess_values)
+    max_weight_tensor = torch.stack(max_weight_values)
+    tempered_reward_tensor = torch.stack(tempered_reward_values)
+    covariance_tensor = torch.stack(covariance_values)
+    budget_fraction = torch.stack(budget_passes).to(torch.float64).mean()
+
+    metrics = {
+        "tempered_grpo/tempering_beta": float(tempering_beta),
+        "tempered_grpo/renyi_order": 2.0,
+        "tempered_grpo/ess_budget_fraction": float(ess_budget_fraction),
+        "tempered_grpo/required_group_fraction": float(required_group_fraction),
+        "tempered_grpo/groups": float(len(group_rows)),
+        "tempered_grpo/ess_mean": float(ess_tensor.mean().item()),
+        "tempered_grpo/ess_min": float(ess_tensor.min().item()),
+        "tempered_grpo/ess_p05": float(torch.quantile(ess_tensor, 0.05).item()),
+        "tempered_grpo/ess_median": float(torch.quantile(ess_tensor, 0.5).item()),
+        "tempered_grpo/groups_meeting_ess_budget_fraction": float(budget_fraction.item()),
+        "tempered_grpo/max_weight_mean": float(max_weight_tensor.mean().item()),
+        "tempered_grpo/max_weight_p95": float(torch.quantile(max_weight_tensor, 0.95).item()),
+        "tempered_grpo/max_weight_max": float(max_weight_tensor.max().item()),
+        "tempered_grpo/tempered_reward_mean": float(tempered_reward_tensor.mean().item()),
+        "tempered_grpo/reward_logprob_covariance_mean": float(covariance_tensor.mean().item()),
+    }
+
+    if budget_fraction.item() + 1e-12 < required_group_fraction and fail_on_ess_budget_violation:
+        raise ValueError(
+            "tempered GRPO ESS budget violation: "
+            f"only {budget_fraction.item():.6f} of groups have ESS/group_size >= "
+            f"{ess_budget_fraction:.6f}, below required {required_group_fraction:.6f}"
+        )
+
+    if canonical_advantages is not None:
+        return canonical_advantages, canonical_advantages, metrics
+    advantages = scalar_advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages, metrics
+
+
 @register_adv_est(AdvantageEstimator.GRPO_VECTORIZED)
 def compute_grpo_vectorized_outcome_advantage(
     token_level_rewards: torch.Tensor,

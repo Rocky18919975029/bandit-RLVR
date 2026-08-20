@@ -53,6 +53,11 @@ SIR_DUMP_POOL=${SIR_DUMP_POOL:-True}
 SIR_DUMP_TOKEN_LOG_PROBS=${SIR_DUMP_TOKEN_LOG_PROBS:-True}
 SIR_DUMP_DIR=${SIR_DUMP_DIR:-}
 SIR_INITIAL_REPLAY_PATH=${SIR_INITIAL_REPLAY_PATH:-}
+TEMPERED_GRPO_ENABLE=${TEMPERED_GRPO_ENABLE:-False}
+TEMPERING_BETA=${TEMPERING_BETA:-1.0}
+TEMPERED_GRPO_ESS_BUDGET_FRACTION=${TEMPERED_GRPO_ESS_BUDGET_FRACTION:-0.5}
+TEMPERED_GRPO_REQUIRED_GROUP_FRACTION=${TEMPERED_GRPO_REQUIRED_GROUP_FRACTION:-0.95}
+TEMPERED_GRPO_FAIL_ON_ESS_BUDGET_VIOLATION=${TEMPERED_GRPO_FAIL_ON_ESS_BUDGET_VIOLATION:-True}
 
 ACTOR_PARAM_OFFLOAD=${ACTOR_PARAM_OFFLOAD:-False}
 ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-False}
@@ -99,6 +104,11 @@ if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
         echo "Initial SIR rollout replay file not found: ${SIR_INITIAL_REPLAY_PATH}" >&2
         exit 1
     fi
+fi
+if [[ "${TEMPERED_GRPO_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
+    && [ -z "${SIR_INITIAL_REPLAY_PATH}" ]; then
+    echo "Tempered GRPO currently requires SIR_INITIAL_REPLAY_PATH for the exact one-step comparison" >&2
+    exit 1
 fi
 if [[ "${SIR_ENABLE}" =~ ^([Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn])$ ]] \
     && [ "${SIR_POOL_MODE}" = "branched_prefix" ] \
@@ -184,6 +194,14 @@ if [ -n "${SIR_INITIAL_REPLAY_PATH}" ]; then
     SIR+=(algorithm.sir.initial_replay_path="${SIR_INITIAL_REPLAY_PATH}")
 fi
 
+TEMPERED_GRPO=(
+    algorithm.tempered_grpo.enable=${TEMPERED_GRPO_ENABLE}
+    algorithm.tempered_grpo.tempering_beta=${TEMPERING_BETA}
+    algorithm.tempered_grpo.ess_budget_fraction=${TEMPERED_GRPO_ESS_BUDGET_FRACTION}
+    algorithm.tempered_grpo.required_group_fraction=${TEMPERED_GRPO_REQUIRED_GROUP_FRACTION}
+    algorithm.tempered_grpo.fail_on_ess_budget_violation=${TEMPERED_GRPO_FAIL_ON_ESS_BUDGET_VIOLATION}
+)
+
 REF=(
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}
     actor_rollout_ref.ref.fsdp_config.param_offload=${REF_PARAM_OFFLOAD}
@@ -249,6 +267,7 @@ python3 -m verl.trainer.main_ppo \
     "${ROLLOUT[@]}" \
     "${ROLLOUT_CORRECTION[@]}" \
     "${SIR[@]}" \
+    "${TEMPERED_GRPO[@]}" \
     "${REF[@]}" \
     "${REWARD[@]}" \
     "${RAY[@]}" \

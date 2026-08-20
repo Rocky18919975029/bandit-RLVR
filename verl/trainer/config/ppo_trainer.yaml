@@ -146,6 +146,23 @@ algorithm:
     # K trajectories from a saved branched-SIR pool as an ordinary GRPO group.
     initial_replay_path: null
 
+  # Escort-policy GRPO on an exact saved rollout group. This is deliberately
+  # restricted to the one-step initial-replay comparison while the method is
+  # being validated against the canonical GRPO control.
+  tempered_grpo:
+
+    enable: False
+
+    # q_beta(y|x) proportional to pi(y|x)^tempering_beta. This is not the
+    # Renyi-divergence order, which is fixed to 2 for the ESS diagnostic.
+    tempering_beta: 1.0
+
+    # Require ESS/group_size >= this threshold for the configured fraction of
+    # prompt groups. With K=16, 0.5 means ESS >= 8.
+    ess_budget_fraction: 0.5
+    required_group_fraction: 0.95
+    fail_on_ess_budget_violation: True
+
   # Progressive HAPPO-style prefix-follower RLVR settings.
   hpf_rlvr:
 

@@ -146,6 +146,30 @@ selected `TEMPERING_BETA=1.0033251003215344`, with
 `TEMPERED_GRPO_ESS_BUDGET_FRACTION=0.5` (ESS at least 8 of 16) and
 `TEMPERED_GRPO_REQUIRED_GROUP_FRACTION=0.95`.
 
+To diagnose whether this reweighting concentrates the update on a few
+high-joint-probability trajectories, run
+`analyze_tempered_advantage_concentration.py` on the same exact-replay pool.
+For response `i`, it measures the squared norm contribution of the advantage
+tensor as `A_i^2 T_i`, where `T_i` is the number of sampled response tokens.
+It reports, for every problem and for both canonical and tempered GRPO, the
+share carried by the joint-log-probability top 1/2/4 trajectories, the maximum
+single-trajectory share, and the effective number of contributing
+trajectories. Homogeneous all-correct or all-wrong groups are retained in the
+per-problem output but excluded from concentration summaries because both
+methods assign them exactly zero advantage. The result is an exact diagnostic
+of the stored advantage tensor, not of parameter-gradient norms.
+
+```bash
+python examples/grpo_trainer/analyze_tempered_advantage_concentration.py \
+  --pool /path/to/sir_pool/1.jsonl \
+  --output-dir /path/to/advantage_concentration \
+  --initial-count 16 \
+  --tempering-beta 1.0033251003215344
+```
+
+The analysis writes `summary.json`, `per_problem.csv`, and
+`per_trajectory.csv` without changing the saved rollout pool.
+
 ## Post-hoc AIME 2024 validation
 
 `run_aime24_posthoc_validation_fsdp.sh` reuses VERL's ordinary validation generation

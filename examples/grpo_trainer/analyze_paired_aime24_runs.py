@@ -393,6 +393,8 @@ def main() -> None:
     parser.add_argument("--expected-seeds", type=_parse_int_list, default=[42, 43, 44, 45])
     parser.add_argument("--expected-problems", type=int, default=30)
     parser.add_argument("--expected-samples-per-run", type=int, default=32)
+    parser.add_argument("--expected-temperature", type=float, default=1.0)
+    parser.add_argument("--expected-top-p", type=float, default=1.0)
     parser.add_argument("--pass-k", type=_parse_int_list, default=[1, 2, 4, 8, 16, 32, 64, 128])
     parser.add_argument("--bootstrap-samples", type=int, default=100_000)
     parser.add_argument("--bootstrap-seed", type=int, default=2026)
@@ -419,6 +421,8 @@ def main() -> None:
         pass_ks=args.pass_k,
         bootstrap_samples=args.bootstrap_samples,
         bootstrap_seed=args.bootstrap_seed,
+        expected_temperature=args.expected_temperature,
+        expected_top_p=args.expected_top_p,
     )
     write_results(args.output_dir, summary, per_problem_rows, per_seed_rows)
 
@@ -450,17 +454,18 @@ def main() -> None:
         key=lambda row: row[f"{second_variant}_minus_{first_variant}_accuracy"],
         reverse=True,
     )
+    pooled_samples = summary["pooled_samples_per_problem_per_variant"]
     print(f"\nLargest {second_variant} improvements:")
     for row in ranked[:5]:
         print(
             f"  {row['problem_id']} {row[f'{first_variant}_correct']} -> "
-            f"{row[f'{second_variant}_correct']}/128: {_short_input(row['input'])}"
+            f"{row[f'{second_variant}_correct']}/{pooled_samples}: {_short_input(row['input'])}"
         )
     print(f"\nLargest {second_variant} regressions:")
     for row in reversed(ranked[-5:]):
         print(
             f"  {row['problem_id']} {row[f'{first_variant}_correct']} -> "
-            f"{row[f'{second_variant}_correct']}/128: {_short_input(row['input'])}"
+            f"{row[f'{second_variant}_correct']}/{pooled_samples}: {_short_input(row['input'])}"
         )
     print(f"\nSaved results to {args.output_dir}")
 

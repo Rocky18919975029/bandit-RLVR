@@ -19,7 +19,7 @@ import pytest
 from examples.grpo_trainer.analyze_paired_aime24_runs import RunSpec, analyze_runs, write_results
 
 
-def _write_run(output_dir, *, variant, seed, correct_counts, samples=4):
+def _write_run(output_dir, *, variant, seed, correct_counts, samples=4, temperature=1.0, top_p=1.0):
     raw_dir = output_dir / "raw"
     raw_dir.mkdir(parents=True)
     correct_total = sum(correct_counts)
@@ -29,8 +29,8 @@ def _write_run(output_dir, *, variant, seed, correct_counts, samples=4):
         "samples_per_problem": [samples],
         "correct_completion_count": correct_total,
         "seed": seed,
-        "temperature": 1.0,
-        "top_p": 1.0,
+        "temperature": temperature,
+        "top_p": top_p,
         "strict_boxed_verifier": True,
         "model_path": f"/{variant}",
         "metrics": {"accuracy": correct_total / (len(correct_counts) * samples)},
@@ -66,7 +66,14 @@ def test_pooled_paired_analysis_uses_stable_problem_content(tmp_path):
     specs = []
     for (variant, seed), counts in count_matrix.items():
         output_dir = tmp_path / f"{variant}-{seed}"
-        _write_run(output_dir, variant=variant, seed=seed, correct_counts=counts)
+        _write_run(
+            output_dir,
+            variant=variant,
+            seed=seed,
+            correct_counts=counts,
+            temperature=0.6,
+            top_p=0.95,
+        )
         specs.append(RunSpec(variant, seed, output_dir))
 
     summary, per_problem, per_seed = analyze_runs(
@@ -78,9 +85,13 @@ def test_pooled_paired_analysis_uses_stable_problem_content(tmp_path):
         pass_ks=[1, 2, 4, 8],
         bootstrap_samples=2_000,
         bootstrap_seed=7,
+        expected_temperature=0.6,
+        expected_top_p=0.95,
     )
 
     assert summary["pooled_samples_per_problem_per_variant"] == 8
+    assert summary["temperature"] == 0.6
+    assert summary["top_p"] == 0.95
     assert summary["metrics"]["accuracy"]["control"] == pytest.approx(0.5)
     assert summary["metrics"]["accuracy"]["tempered"] == pytest.approx(2 / 3)
     assert summary["metrics"]["accuracy"]["tempered_minus_control"] == pytest.approx(1 / 6)

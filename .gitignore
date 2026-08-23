@@ -7,6 +7,7 @@
 **/*.tar.gz
 **/playground
 **/wandb
+offline_bundles/
 
 /pyrightconfig.json
 

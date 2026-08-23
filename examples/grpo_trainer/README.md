@@ -1,5 +1,7 @@
 # Group Relative Policy Optimization (GRPO)
 
+For the pinned, fully offline Open-R1/LightEval AIME24 `T=0.6`, `top_p=0.95`, `n=64` protocol, see [openr1_lighteval/README.md](openr1_lighteval/README.md).
+
 In reinforcement learning, classic algorithms like PPO rely on a "critic" model to estimate the value of actions, guiding the learning process. However, training this critic model can be resource-intensive.
 
 GRPO simplifies this process by eliminating the need for a separate critic model. Instead, it operates as follows:

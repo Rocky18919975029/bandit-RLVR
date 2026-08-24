@@ -85,6 +85,10 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "HF_DATASETS_OFFLINE=1" in wrapper
     assert "TRANSFORMERS_OFFLINE=1" in wrapper
     assert "unset PYTHONPATH" in wrapper
+    assert 'PYTHONPATH="${SCRIPT_DIR}" lighteval vllm' in wrapper
+    assert "--custom-tasks openr1_aime24_task" in wrapper
+    assert '"trust_remote_code" in inspect.signature(load_dataset).parameters' in task
+    assert "lighteval_task_module.download_dataset_worker = _offline_download_dataset_worker" in task
     assert "#SBATCH --gres=gpu:8" in launcher
     assert "DATA_PARALLEL_SIZE != ALLOCATED_GPUS" in launcher
     assert "tensor_parallel_size=1" in wrapper

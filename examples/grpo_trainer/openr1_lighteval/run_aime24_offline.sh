@@ -125,10 +125,10 @@ echo "  output: ${OUTPUT_DIR}"
 
 MODEL_ARGS="model_name=${MODEL_PATH},dtype=bfloat16,tensor_parallel_size=1,data_parallel_size=${DATA_PARALLEL_SIZE},gpu_memory_utilization=${GPU_MEMORY_UTILIZATION},max_model_length=${MAX_MODEL_LENGTH},max_num_seqs=${MAX_NUM_SEQS},max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS},seed=${EVAL_SEED},trust_remote_code=True,use_chat_template=True,generation_parameters={temperature:${EVAL_TEMPERATURE},top_p:${EVAL_TOP_P},seed:${EVAL_SEED},max_new_tokens:${MAX_NEW_TOKENS}}"
 
-lighteval vllm \
+PYTHONPATH="${SCRIPT_DIR}" lighteval vllm \
     "${MODEL_ARGS}" \
     "${TASK_NAME}" \
-    --custom-tasks "${SCRIPT_DIR}/openr1_aime24_task.py" \
+    --custom-tasks openr1_aime24_task \
     --use-chat-template \
     --save-details \
     --output-dir "${OUTPUT_DIR}/lighteval"

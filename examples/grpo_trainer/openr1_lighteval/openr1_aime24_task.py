@@ -4,12 +4,48 @@
 
 """Offline copy of Open-R1's LightEval AIME24 sampling task."""
 
+import inspect
 import os
 from pathlib import Path
 
+import lighteval.tasks.lighteval_task as lighteval_task_module
+import lighteval.utils.utils as lighteval_utils_module
+from datasets import load_dataset
 from lighteval.metrics.metrics import Metrics
 from lighteval.tasks.default_prompts import aime_prompt_fn
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
+
+
+def _offline_download_dataset_worker(
+    dataset_path,
+    dataset_config_name,
+    trust_dataset,
+    dataset_filter=None,
+    revision=None,
+):
+    """Load the local task with either the old or new datasets API."""
+    load_kwargs = {
+        "path": dataset_path,
+        "name": dataset_config_name,
+        "data_dir": None,
+        "cache_dir": None,
+        "download_mode": None,
+        "revision": revision,
+    }
+    if "trust_remote_code" in inspect.signature(load_dataset).parameters:
+        load_kwargs["trust_remote_code"] = trust_dataset
+
+    dataset = load_dataset(**load_kwargs)
+    if dataset_filter is not None:
+        dataset = dataset.filter(dataset_filter)
+    return dataset
+
+
+# The pinned Open-R1 LightEval revision predates datasets 5, which removed the
+# trust_remote_code argument. Patch only its dataset-loading hook; prompts,
+# generation parameters, metrics, and aggregation remain the pinned originals.
+lighteval_task_module.download_dataset_worker = _offline_download_dataset_worker
+lighteval_utils_module.download_dataset_worker = _offline_download_dataset_worker
 
 dataset_dir_value = os.environ.get("OPENR1_AIME24_DATASET_DIR")
 if not dataset_dir_value:

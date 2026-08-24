@@ -50,6 +50,9 @@ cd "${REPO_ROOT}"
 unset PYTHONPATH
 unset ROCR_VISIBLE_DEVICES
 unset HIP_VISIBLE_DEVICES
+unset RAY_ADDRESS
+unset RAY_TMPDIR
+unset VLLM_ENABLE_V1_MULTIPROCESSING
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
 export HF_HUB_OFFLINE=1
@@ -96,7 +99,7 @@ expected_prefix = Path(sys.argv[1]).resolve()
 if Path(sys.prefix).resolve() != expected_prefix:
     raise SystemExit(f"Wrong Python prefix: expected {expected_prefix}, got {sys.prefix}")
 marker = json.loads((expected_prefix / ".openr1_lighteval_environment.json").read_text(encoding="utf-8"))
-expected_commit = "d3da6b9bbf38104c8b5e1acc86f83541f9a502d1"
+expected_commit = "24895519caecec2abeea53fa790021325ce7e59e"
 if Path(marker.get("environment_prefix", "")).resolve() != expected_prefix:
     raise SystemExit(f"Environment marker belongs to another prefix: {marker.get('environment_prefix')}")
 if marker.get("lighteval_commit") != expected_commit:
@@ -107,6 +110,10 @@ for name, package in (("lighteval", lighteval), ("torch", torch), ("vllm", vllm)
     package_path = Path(package.__file__).resolve()
     if expected_prefix not in package_path.parents:
         raise SystemExit(f"{name} imported outside isolated environment: {package_path}")
+if lighteval.__version__ != "0.10.1.dev0":
+    raise SystemExit(f"Wrong LightEval version: {lighteval.__version__}")
+if vllm.__version__ != "0.11.0":
+    raise SystemExit(f"Wrong vLLM version: {vllm.__version__}")
 print("Isolated evaluation environment: PASS")
 print("python:", sys.executable)
 print("lighteval:", lighteval.__file__)

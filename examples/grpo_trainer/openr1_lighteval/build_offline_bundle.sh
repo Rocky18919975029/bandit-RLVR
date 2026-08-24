@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
-LIGHTEVAL_COMMIT=d3da6b9bbf38104c8b5e1acc86f83541f9a502d1
+LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
 BUNDLE_DIR=${BUNDLE_DIR:-${REPO_ROOT}/offline_bundles/openr1-lighteval-${LIGHTEVAL_COMMIT}}
 PYTHON_BIN=${PYTHON_BIN:-/opt/anaconda3/bin/python3.12}
 
@@ -30,6 +30,33 @@ git -C "${WORK_DIR}/lighteval" checkout "${LIGHTEVAL_COMMIT}"
     --no-deps \
     --wheel-dir "${WHEELHOUSE}" \
     "${WORK_DIR}/lighteval"
+
+"${PYTHON_BIN}" - "${WHEELHOUSE}" <<'PY'
+import zipfile
+import sys
+from pathlib import Path
+
+wheelhouse = Path(sys.argv[1])
+wheels = list(wheelhouse.glob("lighteval-0.10.1.dev0-*.whl"))
+if len(wheels) != 1:
+    raise SystemExit(f"Expected exactly one LightEval 0.10.1 wheel, found: {wheels}")
+
+with zipfile.ZipFile(wheels[0]) as archive:
+    vllm_model = archive.read("lighteval/models/vllm/vllm_model.py").decode("utf-8")
+    model_loader = archive.read("lighteval/models/model_loader.py").decode("utf-8")
+    metrics = archive.read("lighteval/metrics/metrics.py").decode("utf-8")
+
+required = {
+    "official AsyncVLLMModel": "class AsyncVLLMModel(VLLMModel)" in vllm_model,
+    "native data parallel argument": '"data_parallel_size": config.data_parallel_size' in vllm_model,
+    "async model selection": "if config.is_async:" in model_loader,
+    "AIME n=64 metric": "math_pass_at_1_64n" in metrics,
+}
+missing = [name for name, present in required.items() if not present]
+if missing:
+    raise SystemExit(f"LightEval wheel compatibility audit failed: {missing}")
+print("Official LightEval async/backend metric audit: PASS")
+PY
 
 # The target environment is an offline clone of the stable VERL environment,
 # which already supplies torch, vLLM, Ray, Transformers, datasets, NumPy,

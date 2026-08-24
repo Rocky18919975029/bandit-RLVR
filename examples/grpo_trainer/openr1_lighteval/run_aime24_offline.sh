@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
 
-LIGHTEVAL_COMMIT=d3da6b9bbf38104c8b5e1acc86f83541f9a502d1
+LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
 TASK_NAME='lighteval|aime24|0|0'
 EVAL_TEMPERATURE=0.6
 EVAL_TOP_P=0.95
@@ -106,8 +106,8 @@ manifest = {
     "seed": ${EVAL_SEED},
     "data_parallel_size": ${DATA_PARALLEL_SIZE},
     "tensor_parallel_size": 1,
-    "vllm_distributed_executor_backend": "uni",
-    "enforce_eager": True,
+    "lighteval_model_backend": "official_async_vllm",
+    "lighteval_internal_monkeypatches": False,
     "vllm_compile_cache_disabled": os.environ.get("VLLM_DISABLE_COMPILE_CACHE") == "1",
     "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
     "smoke_max_samples": int("${SMOKE_MAX_SAMPLES}") if "${SMOKE_MAX_SAMPLES}" else None,
@@ -132,24 +132,26 @@ echo "  samples/problem: ${EVAL_N} (total=$((EXPECTED_PROBLEMS * EVAL_N)))"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
 echo "  seed: ${EVAL_SEED}"
 echo "  topology: ${DATA_PARALLEL_SIZE} independent vLLM replicas x TP=1"
-echo "  vLLM execution: executor=uni, enforce_eager=True, compile cache disabled"
+echo "  LightEval backend: official AsyncVLLMModel (no model monkeypatches)"
 echo "  max model/new tokens: ${MAX_MODEL_LENGTH}/${MAX_NEW_TOKENS}"
 echo "  output: ${OUTPUT_DIR}"
 if [ -n "${SMOKE_MAX_SAMPLES}" ]; then
     echo "  SMOKE TEST ONLY: max_samples=${SMOKE_MAX_SAMPLES}; results are not reportable"
 fi
 
-MODEL_ARGS="model_name=${MODEL_PATH},dtype=bfloat16,tensor_parallel_size=1,data_parallel_size=${DATA_PARALLEL_SIZE},gpu_memory_utilization=${GPU_MEMORY_UTILIZATION},max_model_length=${MAX_MODEL_LENGTH},max_num_seqs=${MAX_NUM_SEQS},max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS},seed=${EVAL_SEED},trust_remote_code=True,use_chat_template=True,generation_parameters={temperature:${EVAL_TEMPERATURE},top_p:${EVAL_TOP_P},seed:${EVAL_SEED},max_new_tokens:${MAX_NEW_TOKENS}}"
+MODEL_ARGS="model_name=${MODEL_PATH},dtype=bfloat16,tensor_parallel_size=1,data_parallel_size=${DATA_PARALLEL_SIZE},is_async=true,gpu_memory_utilization=${GPU_MEMORY_UTILIZATION},max_model_length=${MAX_MODEL_LENGTH},max_num_seqs=${MAX_NUM_SEQS},max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS},seed=${EVAL_SEED},trust_remote_code=True,generation_parameters={temperature:${EVAL_TEMPERATURE},top_p:${EVAL_TOP_P},seed:${EVAL_SEED},max_new_tokens:${MAX_NEW_TOKENS}}"
 
 LIGHTEVAL_EXTRA_ARGS=()
 if [ -n "${SMOKE_MAX_SAMPLES}" ]; then
     LIGHTEVAL_EXTRA_ARGS+=(--max-samples "${SMOKE_MAX_SAMPLES}")
 fi
 
-PYTHONPATH="${SCRIPT_DIR}" python "${SCRIPT_DIR}/run_lighteval_vllm.py" \
-    --model-args "${MODEL_ARGS}" \
-    --tasks "${TASK_NAME}" \
-    --custom-tasks openr1_aime24_task \
+"${EVAL_ENV_PATH}/bin/lighteval" vllm \
+    "${MODEL_ARGS}" \
+    "${TASK_NAME}" \
+    --custom-tasks "${SCRIPT_DIR}/openr1_aime24_task.py" \
+    --use-chat-template \
+    --save-details \
     --output-dir "${OUTPUT_DIR}/lighteval" \
     "${LIGHTEVAL_EXTRA_ARGS[@]}"
 

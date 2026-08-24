@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib.util
-import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -74,7 +71,6 @@ def test_prepare_offline_dataset_rejects_conflicting_duplicate_answers(tmp_path)
 def test_wrapper_protocol_is_fixed_and_offline():
     wrapper = (WRAPPER_DIR / "run_aime24_offline.sh").read_text(encoding="utf-8")
     task = (WRAPPER_DIR / "openr1_aime24_task.py").read_text(encoding="utf-8")
-    vllm_runner = (WRAPPER_DIR / "run_lighteval_vllm.py").read_text(encoding="utf-8")
     launcher = (REPO_ROOT / "examples/grpo_trainer/submit_openr1_aime24_lighteval_h100.slurm").read_text(
         encoding="utf-8"
     )
@@ -87,28 +83,21 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert 'name="aime24"' in task
     assert 'suite=["lighteval"]' in task
     assert "Metrics.math_pass_at_1_64n" in task
-    assert "generation_size=32768" in task
+    assert "generation_size=None" in task
     assert "HF_HUB_OFFLINE=1" in wrapper
     assert "HF_DATASETS_OFFLINE=1" in wrapper
     assert "TRANSFORMERS_OFFLINE=1" in wrapper
     assert "unset PYTHONPATH" in wrapper
-    assert 'PYTHONPATH="${SCRIPT_DIR}" python "${SCRIPT_DIR}/run_lighteval_vllm.py"' in wrapper
-    assert "--custom-tasks openr1_aime24_task" in wrapper
+    assert '"${EVAL_ENV_PATH}/bin/lighteval" vllm' in wrapper
+    assert '--custom-tasks "${SCRIPT_DIR}/openr1_aime24_task.py"' in wrapper
+    assert "is_async=true" in wrapper
+    assert '"lighteval_internal_monkeypatches": False' in wrapper
+    assert "run_lighteval_vllm.py" not in wrapper
     assert '"trust_remote_code" in inspect.signature(load_dataset).parameters' in task
     assert "lighteval_task_module.download_dataset_worker = _offline_download_dataset_worker" in task
     assert "#SBATCH --gres=gpu:8" in launcher
     assert "DATA_PARALLEL_SIZE != ALLOCATED_GPUS" in launcher
     assert "tensor_parallel_size=1" in wrapper
-    assert '"vllm_distributed_executor_backend": "uni"' in wrapper
-    assert "executor=uni" in wrapper
-    assert "enforce_eager=True" in wrapper
-    assert 'self.model_args["enforce_eager"] = True' in vllm_runner
-    assert 'self.model_args["distributed_executor_backend"] = "uni"' in vllm_runner
-    assert "TokensPrompt(prompt_token_ids=token_ids)" in vllm_runner
-    assert "llm.generate(prompts=prompts" in vllm_runner
-    assert "VLLMModel._generate = generate" in vllm_runner
-    assert "run_vllm(" in vllm_runner
-    assert 'parser.add_argument("--max-samples", type=int)' in vllm_runner
     assert '"reportable": not bool("${SMOKE_MAX_SAMPLES}")' in wrapper
     assert "SMOKE TEST ONLY" in wrapper
     assert "VLLM_DISABLE_COMPILE_CACHE=1" in launcher
@@ -121,136 +110,5 @@ def test_environment_setup_refuses_training_prefix():
     assert "conda create --offline" in setup_script
     assert '--clone "${BASE_ENV_PATH}"' in setup_script
     assert "--no-index" in setup_script
-
-
-def test_vllm_011_compatibility_preserves_interleaved_order(monkeypatch):
-    calls = {"llm_args": [], "prompt_shards": [], "shutdowns": 0}
-
-    class FakeSamplingParams:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    class FakeTokensPrompt(dict):
-        def __init__(self, *, prompt_token_ids):
-            super().__init__(prompt_token_ids=list(prompt_token_ids))
-
-    class FakeLLM:
-        def __init__(self, **kwargs):
-            calls["llm_args"].append(kwargs)
-
-        def generate(self, *, prompts, sampling_params):
-            calls["prompt_shards"].append(prompts)
-            assert sampling_params.temperature == 0.6
-            assert sampling_params.top_p == 0.95
-            assert sampling_params.n == 1
-            assert sampling_params.max_tokens == 128
-            return [tuple(prompt["prompt_token_ids"]) for prompt in prompts]
-
-    class FakeRemoteFunction:
-        def __init__(self, function):
-            self.function = function
-
-        def remote(self, *args):
-            return self.function(*args)
-
-    class FakeRay:
-        def remote(self, **options):
-            assert options == {"num_gpus": 1}
-            return FakeRemoteFunction
-
-        def get(self, values):
-            return values
-
-        def shutdown(self):
-            calls["shutdowns"] += 1
-
-    class FakeVLLMModel:
-        def _create_auto_model(self, config):
-            # Match pinned LightEval: data parallel mode asks each outer Ray
-            # worker to start another Ray-backed vLLM executor.
-            self.model_args = {
-                "model": "fake-model",
-                "distributed_executor_backend": "ray",
-            }
-            return None
-
-    def distribute(count, values):
-        values = list(values)
-        return [iter(values[index::count]) for index in range(count)]
-
-    fake_runner_calls = []
-    fake_main_vllm = ModuleType("lighteval.main_vllm")
-    fake_main_vllm.vllm = lambda **kwargs: fake_runner_calls.append(kwargs)
-
-    fake_vllm_model = ModuleType("lighteval.models.vllm.vllm_model")
-    fake_vllm_model.VLLMModel = FakeVLLMModel
-    fake_vllm_model.SamplingParams = FakeSamplingParams
-    fake_vllm_model.ray = FakeRay()
-    fake_vllm_model.distribute = distribute
-
-    fake_vllm = ModuleType("vllm")
-    fake_vllm.LLM = FakeLLM
-    fake_vllm.__version__ = "0.11.0-test"
-    fake_vllm_inputs = ModuleType("vllm.inputs")
-    fake_vllm_inputs.TokensPrompt = FakeTokensPrompt
-
-    for package_name in ("lighteval", "lighteval.models", "lighteval.models.vllm"):
-        package = ModuleType(package_name)
-        package.__path__ = []
-        monkeypatch.setitem(sys.modules, package_name, package)
-
-    monkeypatch.setitem(sys.modules, "lighteval.main_vllm", fake_main_vllm)
-    monkeypatch.setitem(
-        sys.modules,
-        "lighteval.models.vllm.vllm_model",
-        fake_vllm_model,
-    )
-    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
-    monkeypatch.setitem(sys.modules, "vllm.inputs", fake_vllm_inputs)
-
-    runner_path = WRAPPER_DIR / "run_lighteval_vllm.py"
-    spec = importlib.util.spec_from_file_location("openr1_lighteval_runner_test", runner_path)
-    assert spec is not None and spec.loader is not None
-    runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
-
-    runner.enable_eager_vllm_for_data_parallel()
-
-    model = FakeVLLMModel()
-    config = SimpleNamespace(data_parallel_size=2, tensor_parallel_size=1)
-    assert model._create_auto_model(config) is None
-    assert model.model_args["enforce_eager"] is True
-    assert model.model_args["distributed_executor_backend"] == "uni"
-
-    model.data_parallel_size = 2
-    model.tensor_parallel_size = 1
-    model._config = SimpleNamespace(
-        generation_parameters=SimpleNamespace(to_vllm_dict=lambda: {"temperature": 0.6, "top_p": 0.95, "seed": 42})
-    )
-
-    outputs = model._generate(
-        [[11], [22], [33], [44]],
-        max_new_tokens=128,
-        num_samples=1,
-    )
-
-    assert outputs == [(11,), (22,), (33,), (44,)]
-    assert calls["prompt_shards"] == [
-        [{"prompt_token_ids": [11]}, {"prompt_token_ids": [33]}],
-        [{"prompt_token_ids": [22]}, {"prompt_token_ids": [44]}],
-    ]
-    assert calls["llm_args"] == [
-        {
-            "model": "fake-model",
-            "enforce_eager": True,
-            "distributed_executor_backend": "uni",
-        },
-        {
-            "model": "fake-model",
-            "enforce_eager": True,
-            "distributed_executor_backend": "uni",
-        },
-    ]
-    assert calls["shutdowns"] == 1
-
-    runner.audit_vllm_runtime()
+    assert 'lighteval.__version__ != "0.10.1.dev0"' in setup_script
+    assert 'vllm.__version__ != "0.11.0"' in setup_script

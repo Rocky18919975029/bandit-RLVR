@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
-LIGHTEVAL_COMMIT=d3da6b9bbf38104c8b5e1acc86f83541f9a502d1
+LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
 CONDA_SH=${CONDA_SH:-/share/anaconda3/etc/profile.d/conda.sh}
 BASE_ENV_PATH=${BASE_ENV_PATH:-/data/user/zhongal/.conda/envs/verl}
 EVAL_ENV_PATH=${EVAL_ENV_PATH:-/data/user/zhongal/.conda/envs/openr1-lighteval-bandit}
@@ -38,7 +38,7 @@ if manifest.get("lighteval_commit") != sys.argv[2]:
     raise SystemExit(
         f"Wrong LightEval bundle commit: expected {sys.argv[2]}, got {manifest.get('lighteval_commit')}"
     )
-if not any(name.startswith("lighteval-0.9.1.dev0-") for name in manifest.get("wheels", [])):
+if not any(name.startswith("lighteval-0.10.1.dev0-") for name in manifest.get("wheels", [])):
     raise SystemExit("Bundle manifest does not contain the pinned LightEval wheel")
 print("Offline bundle audit: PASS")
 PY
@@ -55,7 +55,7 @@ fi
 "${EVAL_ENV_PATH}/bin/python" -m pip install \
     --no-index \
     --find-links "${BUNDLE_DIR}/wheelhouse" \
-    "lighteval[math]==0.9.1.dev0" \
+    "lighteval[math]==0.10.1.dev0" \
     more-itertools
 
 PYTHONNOUSERSITE=1 "${EVAL_ENV_PATH}/bin/python" - "${EVAL_ENV_PATH}" "${LIGHTEVAL_COMMIT}" <<'PY'
@@ -64,16 +64,26 @@ import sys
 from pathlib import Path
 
 import datasets
+import inspect
 import latex2sympy2_extended
 import lighteval
 import torch
 import vllm
+from lighteval.models.vllm.vllm_model import AsyncVLLMModel
 
 prefix = Path(sys.argv[1]).resolve()
 for package_name, package in (("lighteval", lighteval), ("vllm", vllm), ("torch", torch)):
     package_path = Path(package.__file__).resolve()
     if prefix not in package_path.parents:
         raise SystemExit(f"{package_name} escaped isolated prefix: {package_path}")
+
+backend_path = Path(inspect.getsourcefile(AsyncVLLMModel)).resolve()
+if prefix not in backend_path.parents:
+    raise SystemExit(f"AsyncVLLMModel escaped isolated prefix: {backend_path}")
+if lighteval.__version__ != "0.10.1.dev0":
+    raise SystemExit(f"Wrong LightEval version: {lighteval.__version__}")
+if vllm.__version__ != "0.11.0":
+    raise SystemExit(f"Wrong vLLM version: {vllm.__version__}")
 
 marker = {
     "environment_prefix": str(prefix),
@@ -82,6 +92,8 @@ marker = {
     "torch_version": torch.__version__,
     "vllm_version": vllm.__version__,
     "datasets_version": datasets.__version__,
+    "model_backend": "official AsyncVLLMModel",
+    "model_backend_source": str(backend_path),
 }
 (prefix / ".openr1_lighteval_environment.json").write_text(
     json.dumps(marker, indent=2, sort_keys=True) + "\n",

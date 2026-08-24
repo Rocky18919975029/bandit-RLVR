@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Adapted from Hugging Face LightEval commit
-# d3da6b9bbf38104c8b5e1acc86f83541f9a502d1.
+# 24895519caecec2abeea53fa790021325ce7e59e.
 
 """Offline copy of Open-R1's LightEval AIME24 sampling task."""
 
@@ -56,9 +56,9 @@ if not (dataset_dir / "train.parquet").is_file():
     raise RuntimeError(f"Missing offline AIME24 train.parquet under {dataset_dir}")
 
 
-# This intentionally mirrors the official `aime24` task in the pinned LightEval
-# revision. The only change is hf_repo: it points at the local, deduplicated
-# parquet directory so dataset loading never contacts the Hugging Face Hub.
+# This mirrors the official `aime24` task in the pinned LightEval revision.
+# The only change is hf_repo: it points at the local, deduplicated parquet
+# directory so dataset loading never contacts the Hugging Face Hub.
 aime24_openr1_offline = LightevalTaskConfig(
     name="aime24",
     suite=["lighteval"],
@@ -69,8 +69,8 @@ aime24_openr1_offline = LightevalTaskConfig(
     evaluation_splits=["train"],
     few_shots_split=None,
     few_shots_select=None,
-    generation_size=32768,
-    metric=[
+    generation_size=None,
+    metrics=[
         Metrics.math_pass_at_1_1n,
         Metrics.math_pass_at_1_4n,
         Metrics.math_pass_at_1_8n,

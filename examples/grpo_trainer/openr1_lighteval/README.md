@@ -5,7 +5,7 @@ model or exported VERL actor without giving the HPC job network access.
 
 The fixed protocol is:
 
-- LightEval commit `24895519caecec2abeea53fa790021325ce7e59e`
+- LightEval commit `865335e44fd84e0bae4a8b1ffcb65075e5080f31`
 - official LightEval AIME24 prompt and math metrics from that revision
 - 30 unique AIME24 problems
 - temperature `0.6`, top-p `0.95`
@@ -36,7 +36,7 @@ On the Mac:
 cd "/Users/zeshenghong/Documents/ChatGPT/bandit RLVR"
 
 export PYTHON_BIN=/opt/anaconda3/bin/python3.12
-export BUNDLE_DIR="$PWD/offline_bundles/openr1-lighteval-24895519caecec2abeea53fa790021325ce7e59e"
+export BUNDLE_DIR="$PWD/offline_bundles/openr1-lighteval-865335e44fd84e0bae4a8b1ffcb65075e5080f31"
 
 bash examples/grpo_trainer/openr1_lighteval/build_offline_bundle.sh
 ```
@@ -50,7 +50,7 @@ cd ~/bandit-RLVR
 export CONDA_SH=/share/anaconda3/etc/profile.d/conda.sh
 export BASE_ENV_PATH=/data/user/zhongal/.conda/envs/verl
 export EVAL_ENV_PATH=/data/user/zhongal/.conda/envs/openr1-lighteval-bandit
-export BUNDLE_DIR="$PWD/offline_bundles/openr1-lighteval-24895519caecec2abeea53fa790021325ce7e59e"
+export BUNDLE_DIR="$PWD/offline_bundles/openr1-lighteval-865335e44fd84e0bae4a8b1ffcb65075e5080f31"
 
 bash examples/grpo_trainer/openr1_lighteval/create_offline_env.sh
 ```

@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
-LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
+LIGHTEVAL_COMMIT=865335e44fd84e0bae4a8b1ffcb65075e5080f31
 BUNDLE_DIR=${BUNDLE_DIR:-${REPO_ROOT}/offline_bundles/openr1-lighteval-${LIGHTEVAL_COMMIT}}
 PYTHON_BIN=${PYTHON_BIN:-/opt/anaconda3/bin/python3.12}
 
@@ -45,12 +45,16 @@ with zipfile.ZipFile(wheels[0]) as archive:
     vllm_model = archive.read("lighteval/models/vllm/vllm_model.py").decode("utf-8")
     model_loader = archive.read("lighteval/models/model_loader.py").decode("utf-8")
     metrics = archive.read("lighteval/metrics/metrics.py").decode("utf-8")
+    metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+    metadata = archive.read(metadata_name).decode("utf-8")
 
 required = {
     "official AsyncVLLMModel": "class AsyncVLLMModel(VLLMModel)" in vllm_model,
     "native data parallel argument": '"data_parallel_size": config.data_parallel_size' in vllm_model,
     "async model selection": "if config.is_async:" in model_loader,
     "AIME n=64 metric": "math_pass_at_1_64n" in metrics,
+    "Transformers compatible with vLLM 0.11": "Requires-Dist: transformers>=4.54.0" in metadata,
+    "NumPy 1.x compatible": "Requires-Dist: numpy<2" in metadata,
 }
 missing = [name for name, present in required.items() if not present]
 if missing:
@@ -59,9 +63,9 @@ print("Official LightEval async/backend metric audit: PASS")
 PY
 
 # The target environment is an offline clone of the stable VERL environment,
-# which already supplies torch, vLLM, Ray, Transformers, datasets, NumPy,
-# pandas and pyarrow. Download the extra LightEval runtime dependencies as
-# Linux/Python-3.12 wheels without pulling a second CUDA/PyTorch stack.
+# which supplies torch, vLLM, Ray, pandas and pyarrow. Include the exact
+# Transformers and datasets versions satisfying both LightEval and vLLM 0.11,
+# without pulling a second CUDA/PyTorch stack.
 "${PYTHON_BIN}" -m pip download \
     --dest "${WHEELHOUSE}" \
     --platform manylinux2014_x86_64 \
@@ -69,6 +73,8 @@ PY
     --python-version 3.12 \
     --abi cp312 \
     --only-binary=:all: \
+    transformers==4.55.2 \
+    datasets==3.6.0 \
     termcolor==2.3.0 \
     pytablewriter \
     typer \

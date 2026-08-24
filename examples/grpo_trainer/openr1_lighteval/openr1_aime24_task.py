@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Adapted from Hugging Face LightEval commit
-# 24895519caecec2abeea53fa790021325ce7e59e.
+# 865335e44fd84e0bae4a8b1ffcb65075e5080f31.
 
 """Offline copy of Open-R1's LightEval AIME24 sampling task."""
 

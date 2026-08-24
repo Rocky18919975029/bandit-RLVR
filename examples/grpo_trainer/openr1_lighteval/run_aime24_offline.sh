@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
 
-LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
+LIGHTEVAL_COMMIT=865335e44fd84e0bae4a8b1ffcb65075e5080f31
 TASK_NAME='lighteval|aime24|0|0'
 EVAL_TEMPERATURE=0.6
 EVAL_TOP_P=0.95

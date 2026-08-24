@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
-LIGHTEVAL_COMMIT=24895519caecec2abeea53fa790021325ce7e59e
+LIGHTEVAL_COMMIT=865335e44fd84e0bae4a8b1ffcb65075e5080f31
 CONDA_SH=${CONDA_SH:-/share/anaconda3/etc/profile.d/conda.sh}
 BASE_ENV_PATH=${BASE_ENV_PATH:-/data/user/zhongal/.conda/envs/verl}
 EVAL_ENV_PATH=${EVAL_ENV_PATH:-/data/user/zhongal/.conda/envs/openr1-lighteval-bandit}
@@ -68,6 +68,7 @@ import inspect
 import latex2sympy2_extended
 import lighteval
 import torch
+import transformers
 import vllm
 from lighteval.models.vllm.vllm_model import AsyncVLLMModel
 
@@ -84,6 +85,10 @@ if lighteval.__version__ != "0.10.1.dev0":
     raise SystemExit(f"Wrong LightEval version: {lighteval.__version__}")
 if vllm.__version__ != "0.11.0":
     raise SystemExit(f"Wrong vLLM version: {vllm.__version__}")
+if transformers.__version__ != "4.55.2":
+    raise SystemExit(f"Wrong Transformers version: {transformers.__version__}")
+if datasets.__version__ != "3.6.0":
+    raise SystemExit(f"Wrong datasets version: {datasets.__version__}")
 
 marker = {
     "environment_prefix": str(prefix),
@@ -91,6 +96,7 @@ marker = {
     "lighteval_path": str(Path(lighteval.__file__).resolve()),
     "torch_version": torch.__version__,
     "vllm_version": vllm.__version__,
+    "transformers_version": transformers.__version__,
     "datasets_version": datasets.__version__,
     "model_backend": "official AsyncVLLMModel",
     "model_backend_source": str(backend_path),

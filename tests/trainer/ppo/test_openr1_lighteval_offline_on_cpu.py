@@ -112,3 +112,14 @@ def test_environment_setup_refuses_training_prefix():
     assert "--no-index" in setup_script
     assert 'lighteval.__version__ != "0.10.1.dev0"' in setup_script
     assert 'vllm.__version__ != "0.11.0"' in setup_script
+    assert 'transformers.__version__ != "4.55.2"' in setup_script
+    assert 'datasets.__version__ != "3.6.0"' in setup_script
+
+
+def test_bundle_includes_versions_compatible_with_lighteval_and_vllm():
+    build_script = (WRAPPER_DIR / "build_offline_bundle.sh").read_text(encoding="utf-8")
+
+    assert "transformers==4.55.2" in build_script
+    assert "datasets==3.6.0" in build_script
+    assert '"Transformers compatible with vLLM 0.11"' in build_script
+    assert '"NumPy 1.x compatible"' in build_script

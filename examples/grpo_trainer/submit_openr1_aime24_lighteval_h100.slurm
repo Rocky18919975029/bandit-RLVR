@@ -91,15 +91,17 @@ import json
 import sys
 from pathlib import Path
 
+import datasets
 import lighteval
 import torch
+import transformers
 import vllm
 
 expected_prefix = Path(sys.argv[1]).resolve()
 if Path(sys.prefix).resolve() != expected_prefix:
     raise SystemExit(f"Wrong Python prefix: expected {expected_prefix}, got {sys.prefix}")
 marker = json.loads((expected_prefix / ".openr1_lighteval_environment.json").read_text(encoding="utf-8"))
-expected_commit = "24895519caecec2abeea53fa790021325ce7e59e"
+expected_commit = "865335e44fd84e0bae4a8b1ffcb65075e5080f31"
 if Path(marker.get("environment_prefix", "")).resolve() != expected_prefix:
     raise SystemExit(f"Environment marker belongs to another prefix: {marker.get('environment_prefix')}")
 if marker.get("lighteval_commit") != expected_commit:
@@ -114,11 +116,17 @@ if lighteval.__version__ != "0.10.1.dev0":
     raise SystemExit(f"Wrong LightEval version: {lighteval.__version__}")
 if vllm.__version__ != "0.11.0":
     raise SystemExit(f"Wrong vLLM version: {vllm.__version__}")
+if transformers.__version__ != "4.55.2":
+    raise SystemExit(f"Wrong Transformers version: {transformers.__version__}")
+if datasets.__version__ != "3.6.0":
+    raise SystemExit(f"Wrong datasets version: {datasets.__version__}")
 print("Isolated evaluation environment: PASS")
 print("python:", sys.executable)
 print("lighteval:", lighteval.__file__)
 print("torch:", torch.__version__, "cuda:", torch.version.cuda)
 print("vllm:", vllm.__version__)
+print("transformers:", transformers.__version__)
+print("datasets:", datasets.__version__)
 print("visible GPUs:", torch.cuda.device_count())
 if not torch.cuda.is_available():
     raise SystemExit("No CUDA device visible inside the Slurm allocation")

@@ -99,6 +99,8 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "#SBATCH --gres=gpu:8" in launcher
     assert "DATA_PARALLEL_SIZE != ALLOCATED_GPUS" in launcher
     assert "tensor_parallel_size=1" in wrapper
+    assert '"vllm_distributed_executor_backend": "uni"' in wrapper
+    assert "executor=uni" in wrapper
     assert "enforce_eager=True" in wrapper
     assert 'self.model_args["enforce_eager"] = True' in vllm_runner
     assert 'self.model_args["distributed_executor_backend"] = "uni"' in vllm_runner

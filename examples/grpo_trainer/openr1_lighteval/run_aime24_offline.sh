@@ -106,6 +106,7 @@ manifest = {
     "seed": ${EVAL_SEED},
     "data_parallel_size": ${DATA_PARALLEL_SIZE},
     "tensor_parallel_size": 1,
+    "vllm_distributed_executor_backend": "uni",
     "enforce_eager": True,
     "vllm_compile_cache_disabled": os.environ.get("VLLM_DISABLE_COMPILE_CACHE") == "1",
     "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
@@ -131,7 +132,7 @@ echo "  samples/problem: ${EVAL_N} (total=$((EXPECTED_PROBLEMS * EVAL_N)))"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
 echo "  seed: ${EVAL_SEED}"
 echo "  topology: ${DATA_PARALLEL_SIZE} independent vLLM replicas x TP=1"
-echo "  vLLM execution: enforce_eager=True, compile cache disabled"
+echo "  vLLM execution: executor=uni, enforce_eager=True, compile cache disabled"
 echo "  max model/new tokens: ${MAX_MODEL_LENGTH}/${MAX_NEW_TOKENS}"
 echo "  output: ${OUTPUT_DIR}"
 if [ -n "${SMOKE_MAX_SAMPLES}" ]; then

@@ -112,7 +112,7 @@ def test_environment_setup_refuses_training_prefix():
     assert "--no-index" in setup_script
     assert 'lighteval.__version__ != "0.10.1.dev0"' in setup_script
     assert 'vllm.__version__ != "0.11.0"' in setup_script
-    assert 'transformers.__version__ != "4.55.2"' in setup_script
+    assert 'Version("4.55.2") <= Version(transformers.__version__) < Version("5")' in setup_script
     assert 'datasets.__version__ != "3.6.0"' in setup_script
 
 

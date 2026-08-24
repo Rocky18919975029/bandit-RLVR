@@ -71,6 +71,7 @@ import torch
 import transformers
 import vllm
 from lighteval.models.vllm.vllm_model import AsyncVLLMModel
+from packaging.version import Version
 
 prefix = Path(sys.argv[1]).resolve()
 for package_name, package in (("lighteval", lighteval), ("vllm", vllm), ("torch", torch)):
@@ -85,8 +86,8 @@ if lighteval.__version__ != "0.10.1.dev0":
     raise SystemExit(f"Wrong LightEval version: {lighteval.__version__}")
 if vllm.__version__ != "0.11.0":
     raise SystemExit(f"Wrong vLLM version: {vllm.__version__}")
-if transformers.__version__ != "4.55.2":
-    raise SystemExit(f"Wrong Transformers version: {transformers.__version__}")
+if not (Version("4.55.2") <= Version(transformers.__version__) < Version("5")):
+    raise SystemExit(f"Transformers is incompatible with vLLM 0.11: {transformers.__version__}")
 if datasets.__version__ != "3.6.0":
     raise SystemExit(f"Wrong datasets version: {datasets.__version__}")
 

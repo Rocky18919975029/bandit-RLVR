@@ -71,6 +71,7 @@ def test_prepare_offline_dataset_rejects_conflicting_duplicate_answers(tmp_path)
 def test_wrapper_protocol_is_fixed_and_offline():
     wrapper = (WRAPPER_DIR / "run_aime24_offline.sh").read_text(encoding="utf-8")
     task = (WRAPPER_DIR / "openr1_aime24_task.py").read_text(encoding="utf-8")
+    vllm_runner = (WRAPPER_DIR / "run_lighteval_vllm.py").read_text(encoding="utf-8")
     launcher = (REPO_ROOT / "examples/grpo_trainer/submit_openr1_aime24_lighteval_h100.slurm").read_text(
         encoding="utf-8"
     )
@@ -88,13 +89,18 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "HF_DATASETS_OFFLINE=1" in wrapper
     assert "TRANSFORMERS_OFFLINE=1" in wrapper
     assert "unset PYTHONPATH" in wrapper
-    assert 'PYTHONPATH="${SCRIPT_DIR}" lighteval vllm' in wrapper
+    assert 'PYTHONPATH="${SCRIPT_DIR}" python "${SCRIPT_DIR}/run_lighteval_vllm.py"' in wrapper
     assert "--custom-tasks openr1_aime24_task" in wrapper
     assert '"trust_remote_code" in inspect.signature(load_dataset).parameters' in task
     assert "lighteval_task_module.download_dataset_worker = _offline_download_dataset_worker" in task
     assert "#SBATCH --gres=gpu:8" in launcher
     assert "DATA_PARALLEL_SIZE != ALLOCATED_GPUS" in launcher
     assert "tensor_parallel_size=1" in wrapper
+    assert "enforce_eager=True" in wrapper
+    assert 'self.model_args["enforce_eager"] = True' in vllm_runner
+    assert "run_vllm(" in vllm_runner
+    assert "VLLM_DISABLE_COMPILE_CACHE=1" in launcher
+    assert "/tmp/vllm_${USER}_${SLURM_JOB_ID}" in launcher
 
 
 def test_environment_setup_refuses_training_prefix():

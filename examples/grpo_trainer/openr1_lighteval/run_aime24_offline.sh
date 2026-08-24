@@ -100,6 +100,9 @@ manifest = {
     "seed": ${EVAL_SEED},
     "data_parallel_size": ${DATA_PARALLEL_SIZE},
     "tensor_parallel_size": 1,
+    "enforce_eager": True,
+    "vllm_compile_cache_disabled": os.environ.get("VLLM_DISABLE_COMPILE_CACHE") == "1",
+    "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
     "max_model_length": ${MAX_MODEL_LENGTH},
     "max_new_tokens": ${MAX_NEW_TOKENS},
     "model_path": "${MODEL_PATH}",
@@ -120,17 +123,16 @@ echo "  samples/problem: ${EVAL_N} (total=$((EXPECTED_PROBLEMS * EVAL_N)))"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
 echo "  seed: ${EVAL_SEED}"
 echo "  topology: ${DATA_PARALLEL_SIZE} independent vLLM replicas x TP=1"
+echo "  vLLM execution: enforce_eager=True, compile cache disabled"
 echo "  max model/new tokens: ${MAX_MODEL_LENGTH}/${MAX_NEW_TOKENS}"
 echo "  output: ${OUTPUT_DIR}"
 
 MODEL_ARGS="model_name=${MODEL_PATH},dtype=bfloat16,tensor_parallel_size=1,data_parallel_size=${DATA_PARALLEL_SIZE},gpu_memory_utilization=${GPU_MEMORY_UTILIZATION},max_model_length=${MAX_MODEL_LENGTH},max_num_seqs=${MAX_NUM_SEQS},max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS},seed=${EVAL_SEED},trust_remote_code=True,use_chat_template=True,generation_parameters={temperature:${EVAL_TEMPERATURE},top_p:${EVAL_TOP_P},seed:${EVAL_SEED},max_new_tokens:${MAX_NEW_TOKENS}}"
 
-PYTHONPATH="${SCRIPT_DIR}" lighteval vllm \
-    "${MODEL_ARGS}" \
-    "${TASK_NAME}" \
+PYTHONPATH="${SCRIPT_DIR}" python "${SCRIPT_DIR}/run_lighteval_vllm.py" \
+    --model-args "${MODEL_ARGS}" \
+    --tasks "${TASK_NAME}" \
     --custom-tasks openr1_aime24_task \
-    --use-chat-template \
-    --save-details \
     --output-dir "${OUTPUT_DIR}/lighteval"
 
 echo "LightEval completed. Result files:"

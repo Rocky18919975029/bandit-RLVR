@@ -22,6 +22,7 @@ The setup script makes an offline Conda clone at a separate prefix and installs 
 - disables user site packages and clears `PYTHONPATH`;
 - requires `lighteval`, `torch`, and `vllm` to resolve inside the isolated prefix;
 - enables the Hugging Face, datasets, and Transformers offline switches.
+- runs vLLM in eager mode with its compile cache disabled and job-local cache roots, preventing independent data-parallel replicas from racing on shared TorchInductor artifacts.
 
 The stable training environment is only the source of the one-time clone. It is never changed.
 
@@ -94,3 +95,5 @@ LightEval and vLLM print their native progress bars. The run also saves:
 - `lighteval/details/**/details_*.parquet`: per-problem generations and scores.
 
 The original Open-R1 task permits up to 32,768 generated tokens. Qwen2.5-Math-7B has a shorter context, so the launcher defaults to the existing comparison cap (`MAX_MODEL_LENGTH=4096`, `MAX_NEW_TOKENS=3072`). These two limits are recorded in the manifest and may be raised for a checkpoint that supports the full Open-R1 length; temperature, top-p, and `n=64` are not configurable.
+
+The wrapper fixes `enforce_eager=True` for inference-engine reliability. This changes only vLLM execution optimization (TorchInductor/CUDA graph use), not the model distribution or evaluation protocol.

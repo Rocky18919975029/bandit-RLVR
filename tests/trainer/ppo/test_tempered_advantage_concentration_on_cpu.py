@@ -13,13 +13,17 @@ import numpy as np
 from examples.grpo_trainer.analyze_tempered_advantage_concentration import analyze_pool, write_results
 
 
-def _candidate(index: int, log_prob: float, reward: float, length: int):
+def _candidate(index: int, first_log_prob: float, reward: float, length: int):
+    assert length >= 2
     return {
         "pool_index": index,
         "sir_pool_origin": "initial",
         "sir_parent_index": index,
-        "sampled_token_ids": list(range(length)),
-        "sampled_token_log_probs": [log_prob / length] * length,
+        "sampled_token_ids": [100 + index] * (length - 1) + [99],
+        # Only the first value is inside the shared horizon in this fixture.
+        # Large later values and terminal EOS must not affect escort weights.
+        "sampled_token_log_probs": [first_log_prob] + [-100.0 - index] * (length - 1),
+        "ends_with_eos": True,
         "acc": reward > 0,
     }
 
@@ -31,16 +35,16 @@ def test_advantage_concentration_uses_exact_tokens_and_zeroes_homogeneous_groups
             "prompt_id": "mixed",
             "source_row_index": 10,
             "candidates": [
-                _candidate(0, -1.0, 1.0, 1),
-                _candidate(1, -2.0, -1.0, 2),
-                _candidate(2, -3.0, -1.0, 3),
-                _candidate(3, -4.0, -1.0, 4),
+                _candidate(0, -1.0, 1.0, 2),
+                _candidate(1, -2.0, -1.0, 3),
+                _candidate(2, -3.0, -1.0, 4),
+                _candidate(3, -4.0, -1.0, 5),
             ],
         },
         {
             "prompt_id": "all-wrong",
             "source_row_index": 11,
-            "candidates": [_candidate(index, -float(index + 1), -1.0, index + 1) for index in range(4)],
+            "candidates": [_candidate(index, -float(index + 1), -1.0, index + 2) for index in range(4)],
         },
     ]
     pool.write_text("".join(json.dumps(row) + "\n" for row in rows))
@@ -59,6 +63,9 @@ def test_advantage_concentration_uses_exact_tokens_and_zeroes_homogeneous_groups
     assert problems[1]["update_active"] is False
     assert problems[1]["canonical_advantage_tensor_norm2"] == 0.0
     assert problems[1]["tempered_advantage_tensor_norm2"] == 0.0
+    assert summary["joint_log_prob_horizon"] == "group_shortest_non_eos_prefix"
+    assert problems[0]["common_non_eos_horizon"] == 1
+    assert problems[1]["common_non_eos_horizon"] == 1
 
     mixed_trajectories = [row for row in trajectories if row["prompt_id"] == "mixed"]
     weights = np.asarray([row["escort_weight"] for row in mixed_trajectories])

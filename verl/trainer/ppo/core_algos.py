@@ -336,6 +336,8 @@ def compute_tempered_grpo_outcome_advantage(
     response_mask: torch.Tensor,
     index: np.ndarray,
     rollout_log_probs: torch.Tensor,
+    response_token_ids: torch.Tensor,
+    eos_token_ids: int | list[int] | tuple[int, ...] | set[int],
     tempering_beta: float,
     epsilon: float = 1e-6,
     norm_adv_by_std_in_grpo: bool = True,
@@ -345,9 +347,14 @@ def compute_tempered_grpo_outcome_advantage(
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
     """Compute the self-normalized escort-policy GRPO advantage.
 
-    Complete responses, including EOS when sampled, are treated as bandit
-    actions. For response ``i`` with rollout-policy joint log-probability
-    ``L_i``, the empirical escort weight is
+    Within each prompt group, all responses are compared over the same prefix
+    horizon. The horizon is the shortest sampled response length after removing
+    a terminal EOS token. For response ``i`` in group ``g``, define
+
+    ``T_g = min_i(non_eos_response_length_i)`` and
+    ``L_i = sum_{t=1}^{T_g} log pi(y_t | x, y_<t)``.
+
+    The empirical escort weight is
 
     ``w_i = softmax((tempering_beta - 1) * L_i)``.
 
@@ -371,6 +378,11 @@ def compute_tempered_grpo_outcome_advantage(
             "rollout_log_probs and response_mask must have identical shapes; "
             f"got {tuple(rollout_log_probs.shape)} and {tuple(response_mask.shape)}"
         )
+    if response_token_ids.shape != response_mask.shape:
+        raise ValueError(
+            "response_token_ids and response_mask must have identical shapes; "
+            f"got {tuple(response_token_ids.shape)} and {tuple(response_mask.shape)}"
+        )
     if token_level_rewards.shape != response_mask.shape:
         raise ValueError(
             "token_level_rewards and response_mask must have identical shapes; "
@@ -385,8 +397,22 @@ def compute_tempered_grpo_outcome_advantage(
     if not torch.isfinite(rollout_log_probs[mask]).all():
         raise ValueError("tempered GRPO received a non-finite chosen-token rollout log-probability")
 
+    if isinstance(eos_token_ids, int):
+        normalized_eos_ids = (int(eos_token_ids),)
+    else:
+        normalized_eos_ids = tuple(sorted({int(token_id) for token_id in eos_token_ids}))
+    if not normalized_eos_ids:
+        raise ValueError("tempered GRPO requires at least one EOS token id")
+
+    sampled_lengths = mask.sum(dim=-1).to(torch.long)
+    positions = torch.arange(mask.shape[1], device=mask.device).unsqueeze(0).expand_as(mask)
+    last_positions = torch.where(mask, positions, torch.full_like(positions, -1)).max(dim=-1).values
+    last_token_ids = response_token_ids.gather(dim=-1, index=last_positions.unsqueeze(-1)).squeeze(-1)
+    eos_tensor = torch.as_tensor(normalized_eos_ids, dtype=last_token_ids.dtype, device=last_token_ids.device)
+    terminal_is_eos = torch.isin(last_token_ids, eos_tensor)
+    non_eos_lengths = sampled_lengths - terminal_is_eos.to(torch.long)
+
     scores = token_level_rewards.sum(dim=-1)
-    joint_log_probs = (rollout_log_probs.to(torch.float64) * mask).sum(dim=-1)
     group_rows: dict[Any, list[int]] = defaultdict(list)
     for row, group_id in enumerate(index):
         group_rows[group_id].append(row)
@@ -411,6 +437,7 @@ def compute_tempered_grpo_outcome_advantage(
     tempered_reward_values = []
     covariance_values = []
     budget_passes = []
+    common_horizon_values = []
 
     with torch.no_grad():
         for group_id, rows in group_rows.items():
@@ -418,7 +445,13 @@ def compute_tempered_grpo_outcome_advantage(
                 raise ValueError(f"tempered GRPO requires at least two trajectories for group {group_id!r}")
             row_tensor = torch.as_tensor(rows, dtype=torch.long, device=scores.device)
             group_scores = scores[row_tensor].to(torch.float64)
-            group_log_probs = joint_log_probs[row_tensor]
+            common_horizon = non_eos_lengths[row_tensor].min()
+            group_mask = mask[row_tensor]
+            sampled_ordinals = group_mask.to(torch.long).cumsum(dim=-1)
+            common_prefix_mask = group_mask & (sampled_ordinals <= common_horizon)
+            group_log_probs = (
+                rollout_log_probs[row_tensor].to(torch.float64) * common_prefix_mask.to(torch.float64)
+            ).sum(dim=-1)
             logits = (tempering_beta - 1.0) * group_log_probs
             weights = torch.softmax(logits - logits.max(), dim=0)
 
@@ -457,11 +490,13 @@ def compute_tempered_grpo_outcome_advantage(
             tempered_reward_values.append(weighted_mean)
             covariance_values.append(reward_log_prob_covariance)
             budget_passes.append(ess >= ess_threshold)
+            common_horizon_values.append(common_horizon.to(torch.float64))
 
     ess_tensor = torch.stack(ess_values)
     max_weight_tensor = torch.stack(max_weight_values)
     tempered_reward_tensor = torch.stack(tempered_reward_values)
     covariance_tensor = torch.stack(covariance_values)
+    common_horizon_tensor = torch.stack(common_horizon_values)
     budget_fraction = torch.stack(budget_passes).to(torch.float64).mean()
 
     metrics = {
@@ -480,6 +515,15 @@ def compute_tempered_grpo_outcome_advantage(
         "tempered_grpo/max_weight_max": float(max_weight_tensor.max().item()),
         "tempered_grpo/tempered_reward_mean": float(tempered_reward_tensor.mean().item()),
         "tempered_grpo/reward_logprob_covariance_mean": float(covariance_tensor.mean().item()),
+        "tempered_grpo/common_horizon_min": float(common_horizon_tensor.min().item()),
+        "tempered_grpo/common_horizon_p05": float(torch.quantile(common_horizon_tensor, 0.05).item()),
+        "tempered_grpo/common_horizon_mean": float(common_horizon_tensor.mean().item()),
+        "tempered_grpo/common_horizon_median": float(torch.quantile(common_horizon_tensor, 0.5).item()),
+        "tempered_grpo/common_horizon_max": float(common_horizon_tensor.max().item()),
+        "tempered_grpo/common_horizon_le_16_fraction": float((common_horizon_tensor <= 16).double().mean().item()),
+        "tempered_grpo/common_horizon_le_32_fraction": float((common_horizon_tensor <= 32).double().mean().item()),
+        "tempered_grpo/common_horizon_le_64_fraction": float((common_horizon_tensor <= 64).double().mean().item()),
+        "tempered_grpo/terminal_eos_fraction": float(terminal_is_eos.to(torch.float64).mean().item()),
     }
 
     if budget_fraction.item() + 1e-12 < required_group_fraction and fail_on_ess_budget_violation:

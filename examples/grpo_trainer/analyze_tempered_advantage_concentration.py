@@ -27,9 +27,12 @@ from typing import Any
 import numpy as np
 
 if __package__:
-    from examples.grpo_trainer.analyze_tempered_initial_pool import _candidate_reward
+    from examples.grpo_trainer.analyze_tempered_initial_pool import (
+        _candidate_reward,
+        _group_shortest_non_eos_joint_log_probs,
+    )
 else:
-    from analyze_tempered_initial_pool import _candidate_reward
+    from analyze_tempered_initial_pool import _candidate_reward, _group_shortest_non_eos_joint_log_probs
 
 
 def parse_args() -> argparse.Namespace:
@@ -221,18 +224,10 @@ def analyze_pool(
             token_counts = np.asarray([len(candidate.get("sampled_token_ids", [])) for candidate in initial])
             if np.any(token_counts <= 0):
                 raise ValueError(f"problem {problem_index} contains an empty response")
-            joint_log_probs = []
-            for trajectory_index, candidate in enumerate(initial):
-                token_log_probs = candidate.get("sampled_token_log_probs", [])
-                if len(token_log_probs) != token_counts[trajectory_index]:
-                    raise ValueError(f"problem {problem_index} trajectory {trajectory_index} token/log-prob mismatch")
-                values = np.asarray(token_log_probs, dtype=np.float64)
-                if not np.all(np.isfinite(values)):
-                    raise ValueError(
-                        f"problem {problem_index} trajectory {trajectory_index} has non-finite log-probabilities"
-                    )
-                joint_log_probs.append(float(math.fsum(float(value) for value in values)))
-            joint_log_probs = np.asarray(joint_log_probs, dtype=np.float64)
+            joint_log_probs, common_horizon, _ = _group_shortest_non_eos_joint_log_probs(
+                initial,
+                context=f"problem {problem_index}",
+            )
             rewards = np.asarray([_candidate_reward(candidate) for candidate in initial], dtype=np.float64)
 
             canonical_advantages = _canonical_advantages(rewards, epsilon)
@@ -260,6 +255,7 @@ def analyze_pool(
                 "token_count_mean": float(np.mean(token_counts)),
                 "token_count_min": int(np.min(token_counts)),
                 "token_count_max": int(np.max(token_counts)),
+                "common_non_eos_horizon": int(common_horizon),
                 "joint_log_prob_max": float(np.max(joint_log_probs)),
                 "joint_log_prob_median": float(np.median(joint_log_probs)),
                 "escort_ess": float(ess),
@@ -291,6 +287,7 @@ def analyze_pool(
                         "pool_index": candidate.get("pool_index"),
                         "joint_logp_rank": int(joint_logp_ranks[trajectory_index]),
                         "joint_log_prob": float(joint_log_probs[trajectory_index]),
+                        "joint_log_prob_horizon": int(common_horizon),
                         "token_count": int(token_counts[trajectory_index]),
                         "reward": float(rewards[trajectory_index]),
                         "escort_weight": float(weights[trajectory_index]),
@@ -334,6 +331,8 @@ def analyze_pool(
         "mixed_reward_problem_count": len(active_rows),
         "zero_advantage_problem_count": len(zero_rows),
         "zero_advantage_problem_fraction": len(zero_rows) / len(problem_rows),
+        "joint_log_prob_horizon": "group_shortest_non_eos_prefix",
+        "common_horizon_distribution": _distribution(problem_rows, "common_non_eos_horizon"),
         "analysis_scope": (
             "Exact advantage-tensor L2 concentration; this is not parameter-gradient norm. "
             "Only mixed-reward groups have nonzero GRPO updates."
@@ -412,6 +411,14 @@ def main() -> None:
         f"({summary['zero_advantage_problem_fraction']:.2%})"
     )
     print(f"Tempering beta: {summary['tempering_beta']:.12g}")
+    horizon = summary["common_horizon_distribution"]
+    print(
+        "Common non-EOS horizon: "
+        f"min={min(row['common_non_eos_horizon'] for row in problem_rows)} "
+        f"p05={horizon['p05']:.1f} median={horizon['median']:.1f} "
+        f"mean={horizon['mean']:.1f} "
+        f"max={max(row['common_non_eos_horizon'] for row in problem_rows)}"
+    )
     distributions = summary["concentration_distributions_over_mixed_groups"]
     print("\nWithin-problem advantage-tensor norm concentration (mixed groups only):")
     for method in ("canonical", "tempered"):

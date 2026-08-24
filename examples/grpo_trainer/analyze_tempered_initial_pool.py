@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze full-sequence tempering on saved initial SIR rollouts.
+"""Analyze group-shared-prefix tempering on saved initial SIR rollouts.
 
 The script never loads a model.  It reads the chosen-token log-probabilities
 already stored in a branched-SIR pool, keeps only ``sir_pool_origin=initial``
@@ -7,8 +7,10 @@ trajectories, and evaluates the empirical escort weights
 
     w_i(alpha) proportional to exp((alpha - 1) * L_i),
 
-where ``L_i`` is the full completion joint log-probability (including EOS when
-it was sampled).  The reward/log-probability covariance is the derivative of
+For group ``g``, the shared horizon is the shortest response length after
+removing terminal EOS.  ``L_i`` sums only the first ``T_g`` chosen-token
+log-probabilities, so every response is compared at the same length and EOS is
+never included.  The reward/log-probability covariance is the derivative of
 the empirical tempered reward with respect to alpha.
 """
 
@@ -66,6 +68,55 @@ def _candidate_reward(candidate: dict[str, Any]) -> float:
     return 1.0 if score > 0 else -1.0
 
 
+def _group_shortest_non_eos_joint_log_probs(
+    candidates: list[dict[str, Any]],
+    *,
+    context: str,
+) -> tuple[np.ndarray, int, int]:
+    """Return equal-horizon joint log-probabilities and terminal-EOS count."""
+    token_log_prob_arrays: list[np.ndarray] = []
+    non_eos_lengths: list[int] = []
+    eos_count = 0
+
+    for candidate in candidates:
+        token_ids = candidate.get("sampled_token_ids", [])
+        token_log_probs = candidate.get("sampled_token_log_probs", [])
+        candidate_id = candidate.get("pool_index")
+        if not token_ids:
+            raise ValueError(f"{context} candidate {candidate_id} has no sampled tokens")
+        if len(token_ids) != len(token_log_probs):
+            raise ValueError(
+                f"{context} candidate {candidate_id} has {len(token_ids)} tokens "
+                f"but {len(token_log_probs)} log-probabilities"
+            )
+        if "ends_with_eos" not in candidate:
+            raise ValueError(
+                f"{context} candidate {candidate_id} is missing ends_with_eos; "
+                "cannot exclude terminal EOS exactly"
+            )
+        values = np.asarray(token_log_probs, dtype=np.float64)
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{context} candidate {candidate_id} contains non-finite log-probabilities")
+
+        ends_with_eos = bool(candidate["ends_with_eos"])
+        non_eos_length = len(token_ids) - int(ends_with_eos)
+        if non_eos_length < 0:
+            raise ValueError(f"{context} candidate {candidate_id} has invalid non-EOS length")
+        token_log_prob_arrays.append(values)
+        non_eos_lengths.append(non_eos_length)
+        eos_count += int(ends_with_eos)
+
+    common_horizon = min(non_eos_lengths)
+    joint_log_probs = np.asarray(
+        [
+            math.fsum(float(value) for value in values[:common_horizon])
+            for values in token_log_prob_arrays
+        ],
+        dtype=np.float64,
+    )
+    return joint_log_probs, common_horizon, eos_count
+
+
 def load_initial_groups(pool_path: Path, initial_count: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     if initial_count < 2:
         raise ValueError(f"initial_count must be at least 2, got {initial_count}")
@@ -74,6 +125,7 @@ def load_initial_groups(pool_path: Path, initial_count: int) -> tuple[np.ndarray
     group_rewards: list[list[float]] = []
     eos_count = 0
     trajectory_count = 0
+    common_horizons: list[int] = []
 
     with pool_path.open(encoding="utf-8") as source:
         for line_number, line in enumerate(source, start=1):
@@ -91,32 +143,16 @@ def load_initial_groups(pool_path: Path, initial_count: int) -> tuple[np.ndarray
                     f"pool line {line_number} has {len(initial)} initial candidates; expected {initial_count}"
                 )
 
-            log_probs: list[float] = []
-            rewards: list[float] = []
-            for candidate in initial:
-                token_ids = candidate.get("sampled_token_ids", [])
-                token_log_probs = candidate.get("sampled_token_log_probs", [])
-                if not token_ids:
-                    raise ValueError(
-                        f"pool line {line_number} candidate {candidate.get('pool_index')} has no sampled tokens"
-                    )
-                if len(token_ids) != len(token_log_probs):
-                    raise ValueError(
-                        f"pool line {line_number} candidate {candidate.get('pool_index')} has "
-                        f"{len(token_ids)} tokens but {len(token_log_probs)} log-probabilities"
-                    )
-                values = np.asarray(token_log_probs, dtype=np.float64)
-                if not np.all(np.isfinite(values)):
-                    raise ValueError(
-                        f"pool line {line_number} candidate {candidate.get('pool_index')} "
-                        "contains non-finite log-probabilities"
-                    )
-                log_probs.append(float(math.fsum(float(value) for value in values)))
-                rewards.append(_candidate_reward(candidate))
-                eos_count += int(bool(candidate.get("ends_with_eos", False)))
-                trajectory_count += 1
+            log_probs, common_horizon, group_eos_count = _group_shortest_non_eos_joint_log_probs(
+                initial,
+                context=f"pool line {line_number}",
+            )
+            rewards = [_candidate_reward(candidate) for candidate in initial]
+            eos_count += group_eos_count
+            trajectory_count += len(initial)
+            common_horizons.append(common_horizon)
 
-            group_log_probs.append(log_probs)
+            group_log_probs.append(log_probs.tolist())
             group_rewards.append(rewards)
 
     if not group_log_probs:
@@ -124,6 +160,7 @@ def load_initial_groups(pool_path: Path, initial_count: int) -> tuple[np.ndarray
 
     joint_log_probs = np.asarray(group_log_probs, dtype=np.float64)
     rewards = np.asarray(group_rewards, dtype=np.float64)
+    horizons = np.asarray(common_horizons, dtype=np.float64)
     metadata = {
         "pool": str(pool_path.resolve()),
         "problem_count": int(joint_log_probs.shape[0]),
@@ -132,6 +169,15 @@ def load_initial_groups(pool_path: Path, initial_count: int) -> tuple[np.ndarray
         "eos_count": eos_count,
         "eos_fraction": eos_count / trajectory_count,
         "untempered_accuracy": float(np.mean(rewards > 0)),
+        "joint_log_prob_horizon": "group_shortest_non_eos_prefix",
+        "common_horizon_min": int(np.min(horizons)),
+        "common_horizon_p05": float(np.quantile(horizons, 0.05)),
+        "common_horizon_mean": float(np.mean(horizons)),
+        "common_horizon_median": float(np.median(horizons)),
+        "common_horizon_max": int(np.max(horizons)),
+        "common_horizon_le_16_fraction": float(np.mean(horizons <= 16)),
+        "common_horizon_le_32_fraction": float(np.mean(horizons <= 32)),
+        "common_horizon_le_64_fraction": float(np.mean(horizons <= 64)),
     }
     return joint_log_probs, rewards, metadata
 
@@ -261,7 +307,7 @@ def plot_curve(rows: list[dict[str, float]], output_path: Path, group_size: int,
         '<style>text{font-family:Arial,sans-serif;fill:#111827}.title{font-size:22px;font-weight:700}'
         '.panel-title{font-size:16px;font-weight:700}.axis{font-size:12px}.legend{font-size:12px}</style>',
         f'<text x="{width / 2}" y="34" text-anchor="middle" class="title">'
-        "Full-sequence escort tempering on initial rollout groups</text>",
+        "Group-shared shortest non-EOS prefix tempering</text>",
     ]
 
     panels = [
@@ -451,6 +497,14 @@ def main() -> None:
     print(f"Initial trajectories/problem: {group_size}")
     print(f"Untempered accuracy: {metadata['untempered_accuracy']:.2%}")
     print(f"EOS fraction: {metadata['eos_fraction']:.2%}")
+    print(
+        "Common non-EOS horizon: "
+        f"min={metadata['common_horizon_min']} "
+        f"p05={metadata['common_horizon_p05']:.1f} "
+        f"median={metadata['common_horizon_median']:.1f} "
+        f"mean={metadata['common_horizon_mean']:.1f} "
+        f"max={metadata['common_horizon_max']}"
+    )
     print(f"ESS budget: {ess_budget:g}/{group_size} ({args.ess_fraction_budget:.0%})")
     print(f"Required groups meeting budget: {args.required_group_fraction:.0%}")
     if selected is None:

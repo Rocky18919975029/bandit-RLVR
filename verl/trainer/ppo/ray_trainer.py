@@ -211,6 +211,7 @@ def compute_advantage(
     num_repeat: int = 1,
     norm_adv_by_std_in_grpo: bool = True,
     config: Optional[AlgoConfig] = None,
+    eos_token_ids: int | list[int] | tuple[int, ...] | set[int] | None = None,
 ) -> DataProto:
     """Compute advantage estimates for policy optimization.
 
@@ -272,6 +273,8 @@ def compute_advantage(
                 response_mask=grpo_calculation_mask,
                 index=data.non_tensor_batch["uid"],
                 rollout_log_probs=data.batch["rollout_log_probs"],
+                response_token_ids=data.batch["responses"],
+                eos_token_ids=eos_token_ids if eos_token_ids is not None else (),
                 tempering_beta=float(tempered_config.get("tempering_beta", 1.0)),
                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                 ess_budget_fraction=float(tempered_config.get("ess_budget_fraction", 0.5)),
@@ -4009,6 +4012,7 @@ class RayPPOTrainer:
             print(
                 "[TEMPERED GRPO] enabled "
                 f"mode={'exact_initial_replay' if sir_initial_replay_path else 'online_rollout'} "
+                "joint_log_prob=group_shortest_non_eos_prefix "
                 f"tempering_beta={tempering_beta} renyi_order=2 "
                 f"ess_budget_fraction={float(tempered_grpo_config.get('ess_budget_fraction', 0.5))} "
                 f"required_group_fraction={float(tempered_grpo_config.get('required_group_fraction', 0.95))}",
@@ -4570,6 +4574,7 @@ class RayPPOTrainer:
                                 num_repeat=effective_rollout_n,
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 config=self.config.algorithm,
+                                eos_token_ids=self.tokenizer.eos_token_id,
                             )
                             tempered_metrics = batch.meta_info.pop("tempered_grpo_metrics", None)
                             if tempered_metrics is not None:
@@ -4583,6 +4588,11 @@ class RayPPOTrainer:
                                     "groups_meeting_budget="
                                     f"{tempered_metrics['tempered_grpo/groups_meeting_ess_budget_fraction']:.4f} "
                                     f"max_weight_p95={tempered_metrics['tempered_grpo/max_weight_p95']:.4f} "
+                                    "common_horizon="
+                                    f"{tempered_metrics['tempered_grpo/common_horizon_median']:.1f}median/"
+                                    f"{tempered_metrics['tempered_grpo/common_horizon_min']:.0f}min "
+                                    "horizon_le_16="
+                                    f"{tempered_metrics['tempered_grpo/common_horizon_le_16_fraction']:.4f} "
                                     "reward_logprob_covariance="
                                     f"{tempered_metrics['tempered_grpo/reward_logprob_covariance_mean']:.4f}",
                                     flush=True,
@@ -4603,6 +4613,7 @@ class RayPPOTrainer:
                                     num_repeat=effective_rollout_n,
                                     norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                     config=self.config.algorithm,
+                                    eos_token_ids=self.tokenizer.eos_token_id,
                                 )
 
                     # update critic

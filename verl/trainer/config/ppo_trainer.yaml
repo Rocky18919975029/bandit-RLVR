@@ -147,8 +147,8 @@ algorithm:
     initial_replay_path: null
 
   # Escort-policy GRPO on either fresh online rollouts or an exact saved
-  # rollout group. Exact replay supports strict one-step comparisons against
-  # canonical GRPO, while online mode supports continued training.
+  # rollout group. Joint log-probabilities use the group-shared shortest
+  # non-EOS prefix, so every trajectory is compared at exactly the same length.
   tempered_grpo:
 
     enable: False

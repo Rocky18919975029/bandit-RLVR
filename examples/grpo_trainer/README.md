@@ -104,7 +104,7 @@ GRPO/PPO update unchanged. Prompt order, chat-template output, ground truth,
 data source, token/log-prob cardinality, K, and step are checked before any
 actor update; a mismatch aborts the run.
 
-Before enabling full-sequence tempering, use
+Before enabling group-shared-prefix tempering, use
 `analyze_tempered_initial_pool.py` on a saved pool. It scans escort weights
 `w_i(alpha) proportional to exp((alpha - 1) L_i)` over the original initial
 trajectories and writes ESS, maximum-weight, tempered-accuracy, and
@@ -121,13 +121,21 @@ log-probabilities, PPO loss, batch order, and optimizer path fixed for a strict
 one-step comparison. Without that path, it applies the same computation to
 fresh online rollout groups and can continue training from a full checkpoint.
 
-For complete response `i`, including its EOS token when present, it computes
+For prompt group `g`, let `T_g` be the shortest sampled response length after
+removing terminal EOS. Every response uses exactly this shared horizon; EOS is
+never part of the joint log-probability:
 
 ```text
-L_i = sum_t log pi_rollout(y_i,t | x,y_i,<t)
+T_g = min_i(non_eos_response_length_i)
+L_i = sum_{t=1}^{T_g} log pi_rollout(y_i,t | x,y_i,<t)
 w_i = softmax((tempering_beta - 1) L_i)
 A_i = K w_i (R_i - sum_j w_j R_j) / weighted_sample_std(R)
 ```
+
+This removes the unequal-length comparison. A group whose shortest response
+has zero non-EOS tokens receives uniform escort weights. Because this changes
+the scale and distribution of `L_i`, a beta selected from the former
+full-response scan must not be reused; rerun `analyze_tempered_initial_pool.py`.
 
 The constant global factor `tempering_beta` from the exact escort-objective
 gradient is absorbed into the learning-rate scale. At `tempering_beta=1`, the

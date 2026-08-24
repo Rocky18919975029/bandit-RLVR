@@ -97,3 +97,5 @@ LightEval and vLLM print their native progress bars. The run also saves:
 The original Open-R1 task permits up to 32,768 generated tokens. Qwen2.5-Math-7B has a shorter context, so the launcher defaults to the existing comparison cap (`MAX_MODEL_LENGTH=4096`, `MAX_NEW_TOKENS=3072`). These two limits are recorded in the manifest and may be raised for a checkpoint that supports the full Open-R1 length; temperature, top-p, and `n=64` are not configurable.
 
 The wrapper fixes `enforce_eager=True` for inference-engine reliability. This changes only vLLM execution optimization (TorchInductor/CUDA graph use), not the model distribution or evaluation protocol.
+
+The pinned LightEval backend predates vLLM 0.10.2 and calls the removed `LLM.generate(prompt_token_ids=...)` API. The local runner preserves LightEval's original sharding and result ordering while wrapping token IDs as vLLM `TokensPrompt` objects and calling `LLM.generate(prompts=...)`, matching the newer vLLM prompt schema.

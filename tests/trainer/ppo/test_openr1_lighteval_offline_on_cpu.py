@@ -98,6 +98,9 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "tensor_parallel_size=1" in wrapper
     assert "enforce_eager=True" in wrapper
     assert 'self.model_args["enforce_eager"] = True' in vllm_runner
+    assert "TokensPrompt(prompt_token_ids=token_ids)" in vllm_runner
+    assert "llm.generate(prompts=prompts" in vllm_runner
+    assert "VLLMModel._generate = generate" in vllm_runner
     assert "run_vllm(" in vllm_runner
     assert "VLLM_DISABLE_COMPILE_CACHE=1" in launcher
     assert "/tmp/vllm_${USER}_${SLURM_JOB_ID}" in launcher

@@ -26,14 +26,23 @@ def audit_vllm_runtime() -> None:
 
 
 def enable_eager_vllm_for_data_parallel() -> None:
-    """Bridge the pinned LightEval backend to vLLM 0.11."""
+    """Bridge the pinned LightEval backend to vLLM 0.11.
+
+    LightEval implements data parallelism with one Ray task per replica and
+    asks vLLM to use its Ray executor as well.  The outer task already owns
+    the replica GPU, so the nested vLLM executor cannot reserve another GPU.
+    Each replica is TP=1 and must therefore use vLLM's in-process executor.
+    """
     original_create_auto_model = VLLMModel._create_auto_model
 
     def create_auto_model(self, config):
         model = original_create_auto_model(self, config)
         if config.data_parallel_size <= 1:
             raise RuntimeError("This wrapper requires data_parallel_size > 1")
+        if config.tensor_parallel_size != 1:
+            raise RuntimeError("This wrapper requires tensor_parallel_size == 1")
         self.model_args["enforce_eager"] = True
+        self.model_args["distributed_executor_backend"] = "uni"
         return model
 
     VLLMModel._create_auto_model = create_auto_model
@@ -66,7 +75,12 @@ def enable_eager_vllm_for_data_parallel() -> None:
                 from vllm import LLM
                 from vllm.inputs import TokensPrompt
 
-                llm = LLM(**model_args)
+                # The Ray task itself owns exactly one GPU.  Do not let the
+                # vLLM instance start a nested Ray executor and request that
+                # same GPU a second time.
+                local_model_args = dict(model_args)
+                local_model_args["distributed_executor_backend"] = "uni"
+                llm = LLM(**local_model_args)
                 prompts = [TokensPrompt(prompt_token_ids=token_ids) for token_ids in requests]
                 return llm.generate(prompts=prompts, sampling_params=worker_sampling_params)
 

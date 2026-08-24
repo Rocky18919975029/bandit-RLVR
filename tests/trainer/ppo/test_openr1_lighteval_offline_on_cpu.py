@@ -101,6 +101,7 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "tensor_parallel_size=1" in wrapper
     assert "enforce_eager=True" in wrapper
     assert 'self.model_args["enforce_eager"] = True' in vllm_runner
+    assert 'self.model_args["distributed_executor_backend"] = "uni"' in vllm_runner
     assert "TokensPrompt(prompt_token_ids=token_ids)" in vllm_runner
     assert "llm.generate(prompts=prompts" in vllm_runner
     assert "VLLMModel._generate = generate" in vllm_runner
@@ -163,7 +164,12 @@ def test_vllm_011_compatibility_preserves_interleaved_order(monkeypatch):
 
     class FakeVLLMModel:
         def _create_auto_model(self, config):
-            self.model_args = {"model": "fake-model"}
+            # Match pinned LightEval: data parallel mode asks each outer Ray
+            # worker to start another Ray-backed vLLM executor.
+            self.model_args = {
+                "model": "fake-model",
+                "distributed_executor_backend": "ray",
+            }
             return None
 
     def distribute(count, values):
@@ -209,9 +215,10 @@ def test_vllm_011_compatibility_preserves_interleaved_order(monkeypatch):
     runner.enable_eager_vllm_for_data_parallel()
 
     model = FakeVLLMModel()
-    config = SimpleNamespace(data_parallel_size=2)
+    config = SimpleNamespace(data_parallel_size=2, tensor_parallel_size=1)
     assert model._create_auto_model(config) is None
     assert model.model_args["enforce_eager"] is True
+    assert model.model_args["distributed_executor_backend"] == "uni"
 
     model.data_parallel_size = 2
     model.tensor_parallel_size = 1
@@ -231,8 +238,16 @@ def test_vllm_011_compatibility_preserves_interleaved_order(monkeypatch):
         [{"prompt_token_ids": [22]}, {"prompt_token_ids": [44]}],
     ]
     assert calls["llm_args"] == [
-        {"model": "fake-model", "enforce_eager": True},
-        {"model": "fake-model", "enforce_eager": True},
+        {
+            "model": "fake-model",
+            "enforce_eager": True,
+            "distributed_executor_backend": "uni",
+        },
+        {
+            "model": "fake-model",
+            "enforce_eager": True,
+            "distributed_executor_backend": "uni",
+        },
     ]
     assert calls["shutdowns"] == 1
 

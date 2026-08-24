@@ -197,6 +197,7 @@ def main() -> None:
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--replica-seed-mode", choices=("rank_offset", "shared"))
     parser.add_argument("--strict-boxed-verifier", action="store_true")
     args = parser.parse_args()
 
@@ -216,6 +217,7 @@ def main() -> None:
                 "temperature": args.temperature,
                 "top_p": args.top_p,
                 "seed": args.seed,
+                "replica_seed_mode": args.replica_seed_mode,
                 "strict_boxed_verifier": args.strict_boxed_verifier,
             }.items()
             if value is not None

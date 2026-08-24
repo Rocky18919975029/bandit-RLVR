@@ -16,6 +16,10 @@ PASS_KS=${PASS_KS:-1,2,4,8,16,32}
 EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-1.0}
 EVAL_TOP_P=${EVAL_TOP_P:-1.0}
 EVAL_SEED=${EVAL_SEED:-42}
+# LightEval passes the same configured engine seed to every data-parallel
+# vLLM replica. Keep this local to post-hoc evaluation; training retains VERL's
+# historical seed + replica_rank behavior unless explicitly overridden.
+ROLLOUT_REPLICA_SEED_MODE=${ROLLOUT_REPLICA_SEED_MODE:-shared}
 EXPECTED_PROBLEMS=${EXPECTED_PROBLEMS:-30}
 VALIDATION_PROBLEM_BATCH_SIZE=${VALIDATION_PROBLEM_BATCH_SIZE:-8}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
@@ -95,6 +99,7 @@ echo "  validation dataset: ${UNIQUE_AIME24_FILE}"
 echo "  samples/problem: ${EVAL_N}"
 echo "  problems/generation batch: ${VALIDATION_PROBLEM_BATCH_SIZE}"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
+echo "  seed: ${EVAL_SEED} (replica mode: ${ROLLOUT_REPLICA_SEED_MODE})"
 echo "  max response tokens: ${MAX_RESPONSE_LENGTH}"
 echo "  output: ${OUTPUT_DIR}"
 
@@ -113,6 +118,7 @@ ROLLOUT_VAL_N="${EVAL_N}" \
 ROLLOUT_VAL_TEMPERATURE="${EVAL_TEMPERATURE}" \
 ROLLOUT_VAL_TOP_P="${EVAL_TOP_P}" \
 ROLLOUT_SEED="${EVAL_SEED}" \
+ROLLOUT_REPLICA_SEED_MODE="${ROLLOUT_REPLICA_SEED_MODE}" \
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH}" \
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH}" \
 REWARD_STRICT_BOX_VERIFY=True \
@@ -132,4 +138,5 @@ python3 "${SCRIPT_DIR}/analyze_aime24_validation.py" \
     --temperature "${EVAL_TEMPERATURE}" \
     --top-p "${EVAL_TOP_P}" \
     --seed "${EVAL_SEED}" \
+    --replica-seed-mode "${ROLLOUT_REPLICA_SEED_MODE}" \
     --strict-boxed-verifier

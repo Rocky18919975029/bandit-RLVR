@@ -14,6 +14,7 @@
 
 import csv
 import json
+from pathlib import Path
 
 import pytest
 
@@ -82,6 +83,23 @@ def test_validation_count_mismatch_is_rejected():
     rows = [{"uid": "one", "data_source": "aime24", "acc": True}]
     with pytest.raises(ValueError, match="Expected 2 problems"):
         summarize_validation(rows, [1], expected_problems=2)
+
+
+def test_replica_engine_seed_modes():
+    pytest.importorskip("ray")
+    pytest.importorskip("vllm")
+    from verl.workers.rollout.vllm_rollout.vllm_async_server import resolve_replica_engine_seed
+
+    assert [resolve_replica_engine_seed(42, rank, "rank_offset") for rank in range(4)] == [42, 43, 44, 45]
+    assert [resolve_replica_engine_seed(42, rank, "shared") for rank in range(4)] == [42, 42, 42, 42]
+    with pytest.raises(ValueError, match="replica_seed_mode"):
+        resolve_replica_engine_seed(42, 0, "unknown")
+
+
+def test_aime24_posthoc_uses_lighteval_shared_replica_seed_by_default():
+    script = Path("examples/grpo_trainer/run_aime24_posthoc_validation_fsdp.sh").read_text()
+    assert "ROLLOUT_REPLICA_SEED_MODE=${ROLLOUT_REPLICA_SEED_MODE:-shared}" in script
+    assert 'ROLLOUT_REPLICA_SEED_MODE="${ROLLOUT_REPLICA_SEED_MODE}"' in script
 
 
 def test_prepare_unique_aime24_removes_physical_repetitions(tmp_path):

@@ -150,7 +150,6 @@ fi
     "${MODEL_ARGS}" \
     "${TASK_NAME}" \
     --custom-tasks "${SCRIPT_DIR}/openr1_aime24_task.py" \
-    --use-chat-template \
     --save-details \
     --output-dir "${OUTPUT_DIR}/lighteval" \
     "${LIGHTEVAL_EXTRA_ARGS[@]}"

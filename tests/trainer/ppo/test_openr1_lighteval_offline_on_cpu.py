@@ -90,6 +90,7 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "unset PYTHONPATH" in wrapper
     assert '"${EVAL_ENV_PATH}/bin/lighteval" vllm' in wrapper
     assert '--custom-tasks "${SCRIPT_DIR}/openr1_aime24_task.py"' in wrapper
+    assert "--use-chat-template" not in wrapper
     assert "is_async=true" in wrapper
     assert '"lighteval_internal_monkeypatches": False' in wrapper
     assert "run_lighteval_vllm.py" not in wrapper

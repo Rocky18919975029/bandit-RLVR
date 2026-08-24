@@ -102,6 +102,8 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert '"reportable": not bool("${SMOKE_MAX_SAMPLES}")' in wrapper
     assert "SMOKE TEST ONLY" in wrapper
     assert "VLLM_DISABLE_COMPILE_CACHE=1" in launcher
+    assert "export NCCL_CUMEM_ENABLE=0" in launcher
+    assert '"nccl_cumem_enable": os.environ.get("NCCL_CUMEM_ENABLE")' in wrapper
     assert "/tmp/vllm_${USER}_${SLURM_JOB_ID}" in launcher
 
 

@@ -110,6 +110,7 @@ manifest = {
     "lighteval_internal_monkeypatches": False,
     "vllm_compile_cache_disabled": os.environ.get("VLLM_DISABLE_COMPILE_CACHE") == "1",
     "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
+    "nccl_cumem_enable": os.environ.get("NCCL_CUMEM_ENABLE"),
     "smoke_max_samples": int("${SMOKE_MAX_SAMPLES}") if "${SMOKE_MAX_SAMPLES}" else None,
     "reportable": not bool("${SMOKE_MAX_SAMPLES}"),
     "max_model_length": ${MAX_MODEL_LENGTH},

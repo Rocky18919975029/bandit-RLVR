@@ -64,6 +64,10 @@ export VLLM_WORKER_MULTIPROC_METHOD=${VLLM_WORKER_MULTIPROC_METHOD:-spawn}
 export VLLM_USE_FLASHINFER_SAMPLER=${VLLM_USE_FLASHINFER_SAMPLER:-0}
 export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
 export VLLM_DISABLE_COMPILE_CACHE=1
+# Match VERL's CUDA rollout runtime. vLLM/NCCL communicator initialization can
+# crash on clusters without CUDA virtual-memory IPC support when this is on.
+export NCCL_CUMEM_ENABLE=0
+export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 export VLLM_CACHE_ROOT=/tmp/vllm_${USER}_${SLURM_JOB_ID}
 export TORCHINDUCTOR_CACHE_DIR=${VLLM_CACHE_ROOT}/torchinductor
 export TRITON_CACHE_DIR=${VLLM_CACHE_ROOT}/triton
@@ -88,6 +92,7 @@ export DATA_PARALLEL_SIZE
 
 python - "${EVAL_ENV_PATH}" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -128,6 +133,7 @@ print("torch:", torch.__version__, "cuda:", torch.version.cuda)
 print("vllm:", vllm.__version__)
 print("transformers:", transformers.__version__)
 print("datasets:", datasets.__version__)
+print("NCCL_CUMEM_ENABLE:", os.environ.get("NCCL_CUMEM_ENABLE"))
 print("visible GPUs:", torch.cuda.device_count())
 if not torch.cuda.is_available():
     raise SystemExit("No CUDA device visible inside the Slurm allocation")

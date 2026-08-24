@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -115,3 +118,122 @@ def test_environment_setup_refuses_training_prefix():
     assert "conda create --offline" in setup_script
     assert '--clone "${BASE_ENV_PATH}"' in setup_script
     assert "--no-index" in setup_script
+
+
+def test_vllm_011_compatibility_preserves_interleaved_order(monkeypatch):
+    calls = {"llm_args": [], "prompt_shards": [], "shutdowns": 0}
+
+    class FakeSamplingParams:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class FakeTokensPrompt(dict):
+        def __init__(self, *, prompt_token_ids):
+            super().__init__(prompt_token_ids=list(prompt_token_ids))
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            calls["llm_args"].append(kwargs)
+
+        def generate(self, *, prompts, sampling_params):
+            calls["prompt_shards"].append(prompts)
+            assert sampling_params.temperature == 0.6
+            assert sampling_params.top_p == 0.95
+            assert sampling_params.n == 1
+            assert sampling_params.max_tokens == 128
+            return [tuple(prompt["prompt_token_ids"]) for prompt in prompts]
+
+    class FakeRemoteFunction:
+        def __init__(self, function):
+            self.function = function
+
+        def remote(self, *args):
+            return self.function(*args)
+
+    class FakeRay:
+        def remote(self, **options):
+            assert options == {"num_gpus": 1}
+            return FakeRemoteFunction
+
+        def get(self, values):
+            return values
+
+        def shutdown(self):
+            calls["shutdowns"] += 1
+
+    class FakeVLLMModel:
+        def _create_auto_model(self, config):
+            self.model_args = {"model": "fake-model"}
+            return None
+
+    def distribute(count, values):
+        values = list(values)
+        return [iter(values[index::count]) for index in range(count)]
+
+    fake_runner_calls = []
+    fake_main_vllm = ModuleType("lighteval.main_vllm")
+    fake_main_vllm.vllm = lambda **kwargs: fake_runner_calls.append(kwargs)
+
+    fake_vllm_model = ModuleType("lighteval.models.vllm.vllm_model")
+    fake_vllm_model.VLLMModel = FakeVLLMModel
+    fake_vllm_model.SamplingParams = FakeSamplingParams
+    fake_vllm_model.ray = FakeRay()
+    fake_vllm_model.distribute = distribute
+
+    fake_vllm = ModuleType("vllm")
+    fake_vllm.LLM = FakeLLM
+    fake_vllm.__version__ = "0.11.0-test"
+    fake_vllm_inputs = ModuleType("vllm.inputs")
+    fake_vllm_inputs.TokensPrompt = FakeTokensPrompt
+
+    for package_name in ("lighteval", "lighteval.models", "lighteval.models.vllm"):
+        package = ModuleType(package_name)
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, package_name, package)
+
+    monkeypatch.setitem(sys.modules, "lighteval.main_vllm", fake_main_vllm)
+    monkeypatch.setitem(
+        sys.modules,
+        "lighteval.models.vllm.vllm_model",
+        fake_vllm_model,
+    )
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    monkeypatch.setitem(sys.modules, "vllm.inputs", fake_vllm_inputs)
+
+    runner_path = WRAPPER_DIR / "run_lighteval_vllm.py"
+    spec = importlib.util.spec_from_file_location("openr1_lighteval_runner_test", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    runner.enable_eager_vllm_for_data_parallel()
+
+    model = FakeVLLMModel()
+    config = SimpleNamespace(data_parallel_size=2)
+    assert model._create_auto_model(config) is None
+    assert model.model_args["enforce_eager"] is True
+
+    model.data_parallel_size = 2
+    model.tensor_parallel_size = 1
+    model._config = SimpleNamespace(
+        generation_parameters=SimpleNamespace(to_vllm_dict=lambda: {"temperature": 0.6, "top_p": 0.95, "seed": 42})
+    )
+
+    outputs = model._generate(
+        [[11], [22], [33], [44]],
+        max_new_tokens=128,
+        num_samples=1,
+    )
+
+    assert outputs == [(11,), (22,), (33,), (44,)]
+    assert calls["prompt_shards"] == [
+        [{"prompt_token_ids": [11]}, {"prompt_token_ids": [33]}],
+        [{"prompt_token_ids": [22]}, {"prompt_token_ids": [44]}],
+    ]
+    assert calls["llm_args"] == [
+        {"model": "fake-model", "enforce_eager": True},
+        {"model": "fake-model", "enforce_eager": True},
+    ]
+    assert calls["shutdowns"] == 1
+
+    runner.audit_vllm_runtime()

@@ -2,11 +2,27 @@
 """Invoke pinned LightEval with reliable multi-replica vLLM settings."""
 
 import argparse
+import inspect
 import itertools
 
 import lighteval.models.vllm.vllm_model as vllm_model_module
 from lighteval.main_vllm import vllm as run_vllm
 from lighteval.models.vllm.vllm_model import VLLMModel
+
+
+def audit_vllm_runtime() -> None:
+    """Fail before model loading when the expected vLLM API is absent."""
+    from vllm import LLM
+    from vllm import __version__ as vllm_version
+    from vllm.inputs import TokensPrompt
+
+    generate_parameters = inspect.signature(LLM.generate).parameters
+    if "prompts" not in generate_parameters:
+        raise RuntimeError(f"Unsupported vLLM {vllm_version}: LLM.generate lacks prompts=")
+    token_prompt = TokensPrompt(prompt_token_ids=[1])
+    if token_prompt["prompt_token_ids"] != [1]:
+        raise RuntimeError(f"Unsupported vLLM {vllm_version}: invalid TokensPrompt schema")
+    print(f"Pinned LightEval / vLLM compatibility audit: PASS (vLLM {vllm_version})")
 
 
 def enable_eager_vllm_for_data_parallel() -> None:
@@ -84,6 +100,7 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int)
     args = parser.parse_args()
 
+    audit_vllm_runtime()
     enable_eager_vllm_for_data_parallel()
     run_vllm(
         model_args=args.model_args,

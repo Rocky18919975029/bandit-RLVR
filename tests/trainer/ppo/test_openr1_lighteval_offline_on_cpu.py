@@ -79,6 +79,9 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "EVAL_TOP_P=0.95" in wrapper
     assert "EVAL_N=64" in wrapper
     assert "EXPECTED_PROBLEMS=30" in wrapper
+    assert "TASK_NAME='lighteval|aime24|0|0'" in wrapper
+    assert 'name="aime24"' in task
+    assert 'suite=["lighteval"]' in task
     assert "Metrics.math_pass_at_1_64n" in task
     assert "generation_size=32768" in task
     assert "HF_HUB_OFFLINE=1" in wrapper

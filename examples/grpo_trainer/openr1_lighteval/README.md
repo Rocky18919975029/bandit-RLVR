@@ -10,7 +10,7 @@ This wrapper evaluates a local Hugging Face model or an exported VERL actor with
 - 64 completions per problem (`1,920` completions total)
 - one independent vLLM replica per GPU; tensor parallelism is fixed to one
 
-The repository task differs from the pinned LightEval task only in its dataset path. It reads a local `train.parquet`, so evaluation cannot silently download or substitute a Hub dataset.
+The repository task keeps the official `lighteval|aime24` identity and differs from the pinned LightEval task only in its dataset path. The custom registration intentionally overrides the built-in task with a local `train.parquet`, so evaluation cannot silently download or substitute a Hub dataset.
 
 The task also contains a narrow dataset-loader compatibility shim because the pinned LightEval commit still passes the removed `trust_remote_code` argument while the isolated environment uses `datasets>=5`. The shim changes only local dataset loading; it does not change the Open-R1 prompt, math scorer, generation parameters, or metric aggregation.
 

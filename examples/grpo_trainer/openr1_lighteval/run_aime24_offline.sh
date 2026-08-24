@@ -7,7 +7,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../../.." && pwd)
 
 LIGHTEVAL_COMMIT=d3da6b9bbf38104c8b5e1acc86f83541f9a502d1
-TASK_NAME='openr1_offline|aime24_openr1_offline|0|0'
+TASK_NAME='lighteval|aime24|0|0'
 EVAL_TEMPERATURE=0.6
 EVAL_TOP_P=0.95
 EVAL_N=64

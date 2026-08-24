@@ -60,8 +60,8 @@ if not (dataset_dir / "train.parquet").is_file():
 # revision. The only change is hf_repo: it points at the local, deduplicated
 # parquet directory so dataset loading never contacts the Hugging Face Hub.
 aime24_openr1_offline = LightevalTaskConfig(
-    name="aime24_openr1_offline",
-    suite=["openr1_offline"],
+    name="aime24",
+    suite=["lighteval"],
     prompt_function=aime_prompt_fn,
     hf_repo=str(dataset_dir),
     hf_subset="default",

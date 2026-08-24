@@ -81,6 +81,7 @@ def main() -> None:
     parser.add_argument("--tasks", required=True)
     parser.add_argument("--custom-tasks", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--max-samples", type=int)
     args = parser.parse_args()
 
     enable_eager_vllm_for_data_parallel()
@@ -91,6 +92,7 @@ def main() -> None:
         use_chat_template=True,
         save_details=True,
         output_dir=args.output_dir,
+        max_samples=args.max_samples,
     )
 
 

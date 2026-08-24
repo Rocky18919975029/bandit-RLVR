@@ -102,6 +102,9 @@ def test_wrapper_protocol_is_fixed_and_offline():
     assert "llm.generate(prompts=prompts" in vllm_runner
     assert "VLLMModel._generate = generate" in vllm_runner
     assert "run_vllm(" in vllm_runner
+    assert 'parser.add_argument("--max-samples", type=int)' in vllm_runner
+    assert '"reportable": not bool("${SMOKE_MAX_SAMPLES}")' in wrapper
+    assert "SMOKE TEST ONLY" in wrapper
     assert "VLLM_DISABLE_COMPILE_CACHE=1" in launcher
     assert "/tmp/vllm_${USER}_${SLURM_JOB_ID}" in launcher
 

@@ -23,6 +23,12 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-3072}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-128}
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-32768}
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.90}
+SMOKE_MAX_SAMPLES=${SMOKE_MAX_SAMPLES:-}
+
+if [ -n "${SMOKE_MAX_SAMPLES}" ] && ! [[ "${SMOKE_MAX_SAMPLES}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SMOKE_MAX_SAMPLES must be a positive integer" >&2
+    exit 1
+fi
 
 if [ "${CONDA_PREFIX:-}" != "${EVAL_ENV_PATH}" ]; then
     echo "Wrong environment: expected CONDA_PREFIX=${EVAL_ENV_PATH}, got ${CONDA_PREFIX:-<unset>}" >&2
@@ -103,6 +109,8 @@ manifest = {
     "enforce_eager": True,
     "vllm_compile_cache_disabled": os.environ.get("VLLM_DISABLE_COMPILE_CACHE") == "1",
     "vllm_cache_root": os.environ.get("VLLM_CACHE_ROOT"),
+    "smoke_max_samples": int("${SMOKE_MAX_SAMPLES}") if "${SMOKE_MAX_SAMPLES}" else None,
+    "reportable": not bool("${SMOKE_MAX_SAMPLES}"),
     "max_model_length": ${MAX_MODEL_LENGTH},
     "max_new_tokens": ${MAX_NEW_TOKENS},
     "model_path": "${MODEL_PATH}",
@@ -126,14 +134,23 @@ echo "  topology: ${DATA_PARALLEL_SIZE} independent vLLM replicas x TP=1"
 echo "  vLLM execution: enforce_eager=True, compile cache disabled"
 echo "  max model/new tokens: ${MAX_MODEL_LENGTH}/${MAX_NEW_TOKENS}"
 echo "  output: ${OUTPUT_DIR}"
+if [ -n "${SMOKE_MAX_SAMPLES}" ]; then
+    echo "  SMOKE TEST ONLY: max_samples=${SMOKE_MAX_SAMPLES}; results are not reportable"
+fi
 
 MODEL_ARGS="model_name=${MODEL_PATH},dtype=bfloat16,tensor_parallel_size=1,data_parallel_size=${DATA_PARALLEL_SIZE},gpu_memory_utilization=${GPU_MEMORY_UTILIZATION},max_model_length=${MAX_MODEL_LENGTH},max_num_seqs=${MAX_NUM_SEQS},max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS},seed=${EVAL_SEED},trust_remote_code=True,use_chat_template=True,generation_parameters={temperature:${EVAL_TEMPERATURE},top_p:${EVAL_TOP_P},seed:${EVAL_SEED},max_new_tokens:${MAX_NEW_TOKENS}}"
+
+LIGHTEVAL_EXTRA_ARGS=()
+if [ -n "${SMOKE_MAX_SAMPLES}" ]; then
+    LIGHTEVAL_EXTRA_ARGS+=(--max-samples "${SMOKE_MAX_SAMPLES}")
+fi
 
 PYTHONPATH="${SCRIPT_DIR}" python "${SCRIPT_DIR}/run_lighteval_vllm.py" \
     --model-args "${MODEL_ARGS}" \
     --tasks "${TASK_NAME}" \
     --custom-tasks openr1_aime24_task \
-    --output-dir "${OUTPUT_DIR}/lighteval"
+    --output-dir "${OUTPUT_DIR}/lighteval" \
+    "${LIGHTEVAL_EXTRA_ARGS[@]}"
 
 echo "LightEval completed. Result files:"
 find "${OUTPUT_DIR}/lighteval" -type f \( -name 'results_*.json' -o -name 'details_*.parquet' \) -print | sort

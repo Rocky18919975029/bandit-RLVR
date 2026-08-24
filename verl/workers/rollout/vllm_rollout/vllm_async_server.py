@@ -61,19 +61,6 @@ if _VLLM_VERSION >= version.parse("0.13.0"):
     _RESET_PREFIX_CACHE_KWARGS["reset_connector"] = True
 
 
-def resolve_replica_engine_seed(base_seed: Optional[int], replica_rank: int, replica_seed_mode: str) -> int:
-    """Resolve a vLLM engine seed without changing historical VERL defaults."""
-    seed = int(base_seed or 0)
-    if replica_seed_mode == "shared":
-        return seed
-    if replica_seed_mode == "rank_offset":
-        return seed + replica_rank
-    raise ValueError(
-        "rollout.replica_seed_mode must be one of {'rank_offset', 'shared'}, "
-        f"got {replica_seed_mode!r}"
-    )
-
-
 if _VLLM_VERSION > version.parse("0.11.0"):
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
@@ -286,9 +273,7 @@ class vLLMHttpServer:
             "gpu_memory_utilization": self.config.gpu_memory_utilization,
             "disable_log_stats": self.config.disable_log_stats,
             "tensor_parallel_size": self.config.tensor_model_parallel_size,
-            "seed": resolve_replica_engine_seed(
-                self.config.get("seed"), self.replica_rank, self.config.get("replica_seed_mode", "rank_offset")
-            ),
+            "seed": self.replica_rank + (self.config.get("seed") or 0),
             "override_generation_config": json.dumps(override_generation_config),
             "quantization": quantization,
             "hf_overrides": hf_overrides,

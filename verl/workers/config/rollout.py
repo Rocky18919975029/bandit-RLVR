@@ -165,10 +165,6 @@ class RolloutConfig(BaseConfig):
     n: int = 1
     repetition_penalty: float = 1.0
     seed: Optional[int] = None
-    # How independent rollout replicas derive their vLLM engine seed. ``rank_offset``
-    # preserves VERL's historical seed + replica_rank behavior; ``shared`` matches
-    # LightEval, where every data-parallel engine receives the same configured seed.
-    replica_seed_mode: str = "rank_offset"
 
     # Early termination threshold for multi-turn rollout in sglang.
     # Abort remaining requests when (1 - over_sample_rate) * total_requests are completed.
@@ -269,12 +265,6 @@ class RolloutConfig(BaseConfig):
 
     def __post_init__(self):
         """Validate the rollout config"""
-        if self.replica_seed_mode not in {"rank_offset", "shared"}:
-            raise ValueError(
-                "rollout.replica_seed_mode must be one of {'rank_offset', 'shared'}, "
-                f"got {self.replica_seed_mode!r}"
-            )
-
         # Deprecation warning for mode field - only async mode is supported
         if self.mode == "sync":
             raise ValueError(

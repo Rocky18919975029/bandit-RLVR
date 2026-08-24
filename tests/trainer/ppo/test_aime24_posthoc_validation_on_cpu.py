@@ -85,21 +85,17 @@ def test_validation_count_mismatch_is_rejected():
         summarize_validation(rows, [1], expected_problems=2)
 
 
-def test_replica_engine_seed_modes():
-    pytest.importorskip("ray")
-    pytest.importorskip("vllm")
-    from verl.workers.rollout.vllm_rollout.vllm_async_server import resolve_replica_engine_seed
-
-    assert [resolve_replica_engine_seed(42, rank, "rank_offset") for rank in range(4)] == [42, 43, 44, 45]
-    assert [resolve_replica_engine_seed(42, rank, "shared") for rank in range(4)] == [42, 42, 42, 42]
-    with pytest.raises(ValueError, match="replica_seed_mode"):
-        resolve_replica_engine_seed(42, 0, "unknown")
-
-
 def test_aime24_posthoc_uses_lighteval_shared_replica_seed_by_default():
     script = Path("examples/grpo_trainer/run_aime24_posthoc_validation_fsdp.sh").read_text()
+    worker = Path("examples/grpo_trainer/generate_aime24_vllm_replica.py").read_text()
     assert "ROLLOUT_REPLICA_SEED_MODE=${ROLLOUT_REPLICA_SEED_MODE:-shared}" in script
-    assert 'ROLLOUT_REPLICA_SEED_MODE="${ROLLOUT_REPLICA_SEED_MODE}"' in script
+    assert "EVAL_N=${EVAL_N:-64}" in script
+    assert "EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-0.6}" in script
+    assert "EVAL_TOP_P=${EVAL_TOP_P:-0.95}" in script
+    assert '--samples-per-problem "${EVAL_N}"' in script
+    assert '--seed "${EVAL_SEED}"' in script
+    assert "n=args.samples_per_problem" in worker
+    assert "seed=args.seed" in worker
 
 
 def test_prepare_unique_aime24_removes_physical_repetitions(tmp_path):

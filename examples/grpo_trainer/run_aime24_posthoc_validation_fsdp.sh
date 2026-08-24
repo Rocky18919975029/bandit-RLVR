@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Evaluate a base model or an exported VERL checkpoint on AIME 2024 with FSDP.
+# Evaluate a base model or exported VERL checkpoint using LightEval's sampling unit:
+# one vLLM request per problem with n completions inside that request.
 
 set -euo pipefail
 
@@ -9,30 +10,26 @@ REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 REQUESTED_MODEL_PATH=${MODEL_PATH:?Set MODEL_PATH to a base model or VERL checkpoint directory}
 DATA_DIR=${DATA_DIR:-/data/user/zhongal/data/reschedule}
 AIME24_FILE=${AIME24_FILE:-${DATA_DIR}/aime24.parquet}
-TRAIN_FILE=${TRAIN_FILE:-${DATA_DIR}/DAPO-Math-17k.filtered.seed42.sample1536.parquet}
 
-EVAL_N=${EVAL_N:-32}
-PASS_KS=${PASS_KS:-1,2,4,8,16,32}
-EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-1.0}
-EVAL_TOP_P=${EVAL_TOP_P:-1.0}
+EVAL_N=${EVAL_N:-64}
+PASS_KS=${PASS_KS:-1,2,4,8,16,32,64}
+EVAL_TEMPERATURE=${EVAL_TEMPERATURE:-0.6}
+EVAL_TOP_P=${EVAL_TOP_P:-0.95}
 EVAL_SEED=${EVAL_SEED:-42}
 # LightEval passes the same configured engine seed to every data-parallel
 # vLLM replica. Keep this local to post-hoc evaluation; training retains VERL's
 # historical seed + replica_rank behavior unless explicitly overridden.
 ROLLOUT_REPLICA_SEED_MODE=${ROLLOUT_REPLICA_SEED_MODE:-shared}
+DATA_PARALLEL_SIZE=${DATA_PARALLEL_SIZE:-${NGPUS_PER_NODE:-1}}
+MAX_MODEL_LENGTH=${MAX_MODEL_LENGTH:-4096}
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+MAX_NUM_SEQS=${MAX_NUM_SEQS:-128}
+MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-32768}
 EXPECTED_PROBLEMS=${EXPECTED_PROBLEMS:-30}
-VALIDATION_PROBLEM_BATCH_SIZE=${VALIDATION_PROBLEM_BATCH_SIZE:-8}
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-1024}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-3072}
-TRAINER_LOGGER=${TRAINER_LOGGER:-'["console"]'}
-WANDB_MODE=${WANDB_MODE:-disabled}
 
 if (( EVAL_N < 1 )); then
     echo "EVAL_N must be positive; got ${EVAL_N}" >&2
-    exit 1
-fi
-if (( VALIDATION_PROBLEM_BATCH_SIZE < 1 )); then
-    echo "VALIDATION_PROBLEM_BATCH_SIZE must be positive; got ${VALIDATION_PROBLEM_BATCH_SIZE}" >&2
     exit 1
 fi
 if (( EXPECTED_PROBLEMS < 1 )); then
@@ -43,8 +40,8 @@ if [ ! -f "${AIME24_FILE}" ]; then
     echo "AIME24 parquet not found: ${AIME24_FILE}" >&2
     exit 1
 fi
-if [ ! -f "${TRAIN_FILE}" ]; then
-    echo "Training parquet required to initialize VERL was not found: ${TRAIN_FILE}" >&2
+if [ "${ROLLOUT_REPLICA_SEED_MODE}" != "shared" ]; then
+    echo "LightEval-compatible posthoc requires ROLLOUT_REPLICA_SEED_MODE=shared" >&2
     exit 1
 fi
 
@@ -97,35 +94,54 @@ echo "  resolved HF model: ${MODEL_PATH}"
 echo "  source dataset: ${AIME24_FILE}"
 echo "  validation dataset: ${UNIQUE_AIME24_FILE}"
 echo "  samples/problem: ${EVAL_N}"
-echo "  problems/generation batch: ${VALIDATION_PROBLEM_BATCH_SIZE}"
 echo "  temperature/top_p: ${EVAL_TEMPERATURE}/${EVAL_TOP_P}"
 echo "  seed: ${EVAL_SEED} (replica mode: ${ROLLOUT_REPLICA_SEED_MODE})"
+echo "  sampling unit: one problem/request with n=${EVAL_N}"
+echo "  data-parallel replicas: ${DATA_PARALLEL_SIZE} x TP=1"
 echo "  max response tokens: ${MAX_RESPONSE_LENGTH}"
 echo "  output: ${OUTPUT_DIR}"
 
-MODE=eval \
-MODEL_PATH="${MODEL_PATH}" \
-DATA_DIR="${DATA_DIR}" \
-TRAIN_FILE="${TRAIN_FILE}" \
-VAL_FILES="['${UNIQUE_AIME24_FILE}']" \
-PROJECT_NAME="${PROJECT_NAME}" \
-RUN_NAME="${RUN_NAME}" \
-VALIDATION_DATA_DIR="${RAW_DIR}" \
-TRAINER_LOGGER="${TRAINER_LOGGER}" \
-WANDB_MODE="${WANDB_MODE}" \
-ROLLOUT_N=2 \
-ROLLOUT_VAL_N="${EVAL_N}" \
-ROLLOUT_VAL_TEMPERATURE="${EVAL_TEMPERATURE}" \
-ROLLOUT_VAL_TOP_P="${EVAL_TOP_P}" \
-ROLLOUT_SEED="${EVAL_SEED}" \
-ROLLOUT_REPLICA_SEED_MODE="${ROLLOUT_REPLICA_SEED_MODE}" \
-MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH}" \
-MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH}" \
-REWARD_STRICT_BOX_VERIFY=True \
-SIR_ENABLE=False \
-bash "${SCRIPT_DIR}/run_qwen2_5_math_7b_grpo_reschedule_baseline.sh" \
-    data.val_batch_size="${VALIDATION_PROBLEM_BATCH_SIZE}" \
-    "$@"
+IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES:-0}"
+if (( DATA_PARALLEL_SIZE > ${#GPU_IDS[@]} )); then
+    echo "Requested ${DATA_PARALLEL_SIZE} replicas but CUDA_VISIBLE_DEVICES has ${#GPU_IDS[@]} GPUs" >&2
+    exit 1
+fi
+
+pids=()
+for ((replica = 0; replica < DATA_PARALLEL_SIZE; replica++)); do
+    replica_cache="${OUTPUT_DIR}/vllm-cache/replica-${replica}"
+    mkdir -p "${replica_cache}"
+    CUDA_VISIBLE_DEVICES="${GPU_IDS[replica]}" \
+    VLLM_CACHE_ROOT="${replica_cache}" \
+    TORCHINDUCTOR_CACHE_DIR="${replica_cache}/torchinductor" \
+    python3 "${SCRIPT_DIR}/generate_aime24_vllm_replica.py" \
+        --model "${MODEL_PATH}" \
+        --data "${UNIQUE_AIME24_FILE}" \
+        --output "${RAW_DIR}/replica-${replica}.jsonl" \
+        --replica-index "${replica}" \
+        --num-replicas "${DATA_PARALLEL_SIZE}" \
+        --samples-per-problem "${EVAL_N}" \
+        --temperature "${EVAL_TEMPERATURE}" \
+        --top-p "${EVAL_TOP_P}" \
+        --seed "${EVAL_SEED}" \
+        --max-model-len "${MAX_MODEL_LENGTH}" \
+        --max-response-tokens "${MAX_RESPONSE_LENGTH}" \
+        --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+        --max-num-seqs "${MAX_NUM_SEQS}" \
+        --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}" &
+    pids+=("$!")
+done
+
+status=0
+for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+        status=1
+    fi
+done
+if (( status != 0 )); then
+    echo "At least one vLLM replica failed" >&2
+    exit 1
+fi
 
 python3 "${SCRIPT_DIR}/analyze_aime24_validation.py" \
     --input "${RAW_DIR}" \
@@ -139,4 +155,5 @@ python3 "${SCRIPT_DIR}/analyze_aime24_validation.py" \
     --top-p "${EVAL_TOP_P}" \
     --seed "${EVAL_SEED}" \
     --replica-seed-mode "${ROLLOUT_REPLICA_SEED_MODE}" \
+    --sampling-unit problem-request-n \
     --strict-boxed-verifier

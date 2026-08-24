@@ -26,11 +26,6 @@ top_p: 1
 # rather than assigned per trajectory.
 seed: null
 
-# How each rollout replica derives its engine seed. ``rank_offset`` uses
-# seed + replica_rank (the historical VERL behavior). ``shared`` gives every
-# replica the same seed, matching LightEval's data-parallel vLLM setup.
-replica_seed_mode: rank_offset
-
 # typically the same as data max prompt length
 # same as data.max_prompt_length if it exists
 prompt_length: ${oc.select:data.max_prompt_length,512}

@@ -108,4 +108,17 @@ export ACTOR_OPTIMIZER_OFFLOAD=${ACTOR_OPTIMIZER_OFFLOAD:-True}
 export REF_PARAM_OFFLOAD=${REF_PARAM_OFFLOAD:-True}
 export ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}
 
-bash examples/grpo_trainer/run_aime24_posthoc_validation_fsdp.sh "$@"
+AIME24_EVAL_PROTOCOL=${AIME24_EVAL_PROTOCOL:-problem_request_n}
+case "${AIME24_EVAL_PROTOCOL}" in
+    problem_request_n)
+        bash examples/grpo_trainer/run_aime24_posthoc_validation_fsdp.sh "$@"
+        ;;
+    historical_step1_control)
+        bash examples/grpo_trainer/run_aime24_step1_control_protocol.sh "$@"
+        ;;
+    *)
+        echo "Unknown AIME24_EVAL_PROTOCOL=${AIME24_EVAL_PROTOCOL}" >&2
+        echo "Expected problem_request_n or historical_step1_control" >&2
+        exit 1
+        ;;
+esac

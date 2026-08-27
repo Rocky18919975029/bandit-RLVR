@@ -98,6 +98,24 @@ def test_aime24_posthoc_uses_lighteval_shared_replica_seed_by_default():
     assert "seed=args.seed" in worker
 
 
+def test_historical_step1_control_protocol_is_locked():
+    script = Path("examples/grpo_trainer/run_aime24_step1_control_protocol.sh").read_text()
+    slurm = Path("examples/grpo_trainer/submit_aime24_posthoc_validation_h100.slurm").read_text()
+
+    assert "EVAL_N=32" in script
+    assert "EVAL_TEMPERATURE=1.0" in script
+    assert "EVAL_TOP_P=1.0" in script
+    assert "EVAL_SEED=42" in script
+    assert "ROLLOUT_REPLICA_SEED_MODE=rank_offset" in script
+    assert "VALIDATION_PROBLEM_BATCH_SIZE=8" in script
+    assert "MAX_RESPONSE_LENGTH=3072" in script
+    assert 'NGPUS_PER_NODE:-0}" != "8"' in script
+    assert 'ROLLOUT_TP:-0}" != "1"' in script
+    assert "--sampling-unit expanded-requests" in script
+    assert "--strict-boxed-verifier" in script
+    assert "historical_step1_control" in slurm
+
+
 def test_prepare_unique_aime24_removes_physical_repetitions(tmp_path):
     pandas = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
